@@ -1,7 +1,5 @@
 # Email OTP Retrieval & Mailbox Integration Utility
 
-[中文文档](./README.zh-CN.md)
-
 A Python utility for mailbox integration, one-time passcode (OTP) retrieval, message parsing, proxy-aware email polling, local JSON backup, and optional internal credential-file inventory checks.
 
 > Use only in systems and environments you own or are explicitly authorized to test.
@@ -34,16 +32,19 @@ A Python utility for mailbox integration, one-time passcode (OTP) retrieval, mes
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Configuration](#configuration)
-  - [1. Mail Backend Mode](#1-mail-backend-mode)
-  - [2. Shared Mail Configuration](#2-shared-mail-configuration)
-  - [3. IMAP Configuration](#3-imap-configuration)
-    - [QQ Mail Example](#qq-mail-example)
-    - [Gmail / Google Workspace Example](#gmail--google-workspace-example)
-  - [4. Freemail API Configuration](#4-freemail-api-configuration)
-  - [5. Cloudflare Temp Mail Configuration](#5-cloudflare-temp-mail-configuration)
-  - [6. Proxy Configuration](#6-proxy-configuration)
-  - [7. Output Directory Configuration](#7-output-directory-configuration)
-  - [8. Optional Internal Inventory Check Configuration](#8-optional-internal-inventory-check-configuration)
+  - [1. `email_api_mode`](#1-email_api_mode)
+  - [2. `mail_domains`](#2-mail_domains)
+  - [3. `gptmail_base`](#3-gptmail_base)
+  - [4. `default_proxy`](#4-default_proxy)
+  - [5. `imap`](#5-imap)
+  - [6. `freemail`](#6-freemail)
+  - [7. `admin_auth`](#7-admin_auth)
+  - [8. `max_otp_retries`](#8-max_otp_retries)
+  - [9. `use_proxy_for_email`](#9-use_proxy_for_email)
+  - [10. `enable_email_masking`](#10-enable_email_masking)
+  - [11. `token_output_dir`](#11-token_output_dir)
+  - [12. `cpa_mode`](#12-cpa_mode)
+  - [13. Configuration suggestions](#13-configuration-suggestions)
 - [Usage](#usage)
 - [Output Files](#output-files)
 - [Troubleshooting](#troubleshooting)
