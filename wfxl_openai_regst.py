@@ -80,8 +80,8 @@ USE_PROXY_FOR_EMAIL = _c.get("use_proxy_for_email", False)
 ENABLE_EMAIL_MASKING = _c.get("enable_email_masking", True)
 TOKEN_OUTPUT_DIR = _c.get("token_output_dir", "").strip()
 
-LOGIN_DELAY_MIN = _c.get("login_delay_min", 5)
-LOGIN_DELAY_MAX = _c.get("login_delay_max", 15)
+LOGIN_DELAY_MIN = _c.get("login_delay_min", 20)
+LOGIN_DELAY_MAX = _c.get("login_delay_max", 45)
 
 ENABLE_EMAIL_MASKING = _c.get("enable_email_masking", True)
 
