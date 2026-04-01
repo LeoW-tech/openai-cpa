@@ -89,13 +89,16 @@ A Python utility that provides multi-backend mailbox support, multi-domain rotat
 - `curl_cffi`
 - `PySocks` (only needed if you want IMAP connections to go through a proxy)
 - `requests` (used by `proxy_manager.py` for Clash controller access and proxy liveness checks)
-
+- `fastapi`
+- `uvicorn`
+- `pydantic`
+- `cloudflare`
 ## Installation
 
 Install required packages:
 
 ```bash
-pip install PyYAML PySocks curl_cffi requests
+pip install curl_cffi requests PyYAML PySocks fastapi uvicorn pydantic cloudflare
 ```
 
 ## Configuration
@@ -106,7 +109,7 @@ A full example based on the current config template:
 
 ```yaml
 # [Mailbox API mode selection]
-# Optional values: "imap" / "freemail" / "cloudflare_temp_email" / "cloudmail" / "mail_curl"
+# Optional values: "imap" / "freemail" / "cloudflare_temp_email" / "cloudmail" / "mail_curl" / "luckmail"
 email_api_mode: "cloudflare_temp_email"
 
 # [Shared settings for cloudflare_temp_email / imap / cloudmail]
