@@ -31,6 +31,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: wenfxl/wenfxl-codex-manager
+        tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
 
       - name: Build and Push
         uses: docker/build-push-action@v5
