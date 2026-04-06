@@ -70,7 +70,7 @@
                     安全登录
                 </button>
 				<div class="text-center mt-4">
-                    <span class="text-[11px] md:text-xs text-gray-400 font-mono tracking-widest">v8.7.4</span>
+                    <span class="text-[11px] md:text-xs text-gray-400 font-mono tracking-widest">v8.7.5</span>
                 </div>
             </div>
         </div>
@@ -79,7 +79,7 @@
             <aside class="w-full md:w-56 h-auto md:h-full bg-gray-900 text-white flex flex-col shadow-xl z-20 shrink-0">
                 <div class="p-3 md:p-5 flex items-center justify-between md:justify-center border-b border-gray-800 shrink-0">
                     <span class="font-black text-base md:text-lg tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-400">Wenfxl Manager</span>
-					<span class="px-1.5 py-0.5 rounded bg-gray-800 border border-gray-700 text-[10px] text-gray-400 font-mono font-bold leading-none">v8.7.4</span>
+					<span class="px-1.5 py-0.5 rounded bg-gray-800 border border-gray-700 text-[10px] text-gray-400 font-mono font-bold leading-none">v8.7.5</span>
                     <button @click="logout" class="md:hidden text-gray-400 hover:text-red-400 text-xs flex items-center gap-1 font-bold bg-gray-800 px-2 py-1 rounded">
                         <span>🚪</span> 退出
                     </button>
@@ -370,6 +370,7 @@
                                     <option value="mail_curl">mail_curl</option>
                                     <option value="luckmail">luckmail (LuckMail 接码)</option>
                                     <option value="tempmail">Tempmail.lol</option>
+                                    <option value="tempmail_org">tempmail_org</option>
                                 </select>
 
                                 <label class="form-label mt-4">发信域名池 (mail_domains)</label>
@@ -499,7 +500,15 @@
                                     <div class="text-[11px] md:text-xs text-green-700 font-bold bg-green-50 border border-green-200 p-3 rounded-lg leading-relaxed shadow-sm">
                                         <p class="flex items-center gap-1"><span>✅</span> 这是一个免费的公开临时邮箱 API。</p>
                                         <p class="mt-2 text-green-600">系统已内置所有对接逻辑，无需您填写任何 API Key、账号或密码，选中后即可直接使用！</p>
-                                        <p class="mt-2 text-green-600">国内服务器或国内环境请勾选左侧的【获取邮箱使用全局代理穿透】否则无法获取邮箱！</p>
+                                        <p class="mt-2 text-red-600 font-black">强烈建议：国内服务器请务必勾选左侧的【获取邮箱使用全局代理穿透】，否则极易获取失败！</p>
+                                    </div>
+                                </div>
+                                <div v-if="config.email_api_mode === 'tempmail_org'">
+                                    <p class="text-xs md:text-sm text-yellow-700 mb-3 md:mb-4 font-bold bg-yellow-100 inline-block px-2 py-1 rounded">当前: Temp-Mail.org</p>
+                                    <div class="text-[11px] md:text-xs text-green-700 font-bold bg-green-50 border border-green-200 p-3 rounded-lg leading-relaxed shadow-sm">
+                                        <p class="flex items-center gap-1"><span>✅</span> 这是一个免费的公开临时邮箱 API</p>
+                                        <p class="mt-2 text-green-600">系统已内置所有对接逻辑，无需配置任何密钥，选中即可直接使用！</p>
+                                        <p class="mt-2 text-red-600 font-black">强烈建议：国内服务器请务必勾选左侧的【获取邮箱使用全局代理穿透】，然后开启节点切换，否则极易获取失败！</p>
                                     </div>
                                 </div>
                                 <div v-if="config.email_api_mode === 'cloudflare_temp_email'">

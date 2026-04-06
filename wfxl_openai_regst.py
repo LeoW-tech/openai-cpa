@@ -329,10 +329,16 @@ async def add_wildcard_dns(req: CFSyncExistingReq, token: str = Depends(verify_t
 
                         if not rec_data.get("success"):
                             errors = rec_data.get("errors", [])
-                            is_exist = any(err.get("code") in [81057, 81058] for err in errors)
-                            if is_exist:
-                                print(f"⚡ [{domain}] 记录已存在无需重复创建。")
+                            is_quota_exceeded = any(err.get("code") == 81045 for err in errors)
+                            is_exist = any(err.get("code") in {81057, 81058} for err in errors)
+
+                            if is_quota_exceeded:
+                                print(f"⚠️ [{domain}] 记录配额已超出，无法继续创建，请手动去cf官网清除记录后在推送。")
                                 continue
+                            elif is_exist:
+                                print(f"⚠️ [{domain}] 记录已存在无需重复创建。")
+                                continue
+
                             print(f"⚠️ [{domain}] 记录创建报错: {errors}")
 
                     print(f"✅ [{domain}] 解析处理成功！")

@@ -235,7 +235,21 @@ def get_email_and_token(proxies: Any = None) -> tuple:
         except Exception as e:
             print(f"[{cfg.ts()}] [ERROR] Tempmail 流程异常: {e}")
         return None, None
+    if mode == "tempmail_org":
+        try:
+            from utils.tempmail_org import TempMailOrgService
+            tm_org = TempMailOrgService(proxies=mail_proxies)
+            email, token = tm_org.create_email()
 
+            if email and token:
+                set_last_email(email)
+                print(f"[{cfg.ts()}] [INFO] TempMail.org 成功创建邮箱: ({mask_email(email)})")
+                return email, token
+            else:
+                print(f"[{cfg.ts()}] [ERROR] TempMail.org 获取邮箱失败")
+        except Exception as e:
+            print(f"[{cfg.ts()}] [ERROR] TempMail.org 流程异常: {e}")
+        return None, None
 
     ai_switch_on = getattr(cfg, 'AI_ENABLE_PROFILE', False)
     if ai_switch_on:
@@ -587,6 +601,34 @@ def get_oai_code(
                 except Exception as e:
                     pass
 
+            elif mode == "tempmail_org":
+                if not jwt:
+                    print(f"\n[{cfg.ts()}] [ERROR] TempMail.org 缺少 token，无法提取验证码！")
+                    return ""
+                try:
+                    from utils.tempmail_org import TempMailOrgService
+                    tm_org = TempMailOrgService(proxies=mail_proxies)
+                    email_list = tm_org.get_inbox(jwt)
+
+                    for msg in email_list:
+                        msg_id = str(msg.get("_id", msg.get("id", "")))
+                        if not msg_id or msg_id in processed_mail_ids:
+                            continue
+
+                        subject = str(msg.get("subject", ""))
+                        code = ""
+                        import re
+                        m = re.search(r"(?<!\d)(\d{6})(?!\d)", subject)
+                        if m:
+                            code = m.group(1)
+
+                        if code:
+                            processed_mail_ids.add(msg_id)
+                            print(f"\n[{cfg.ts()}] [SUCCESS] TempMail.org 提取成功: {code}")
+                            return code
+                except Exception as e:
+                    pass
+
             elif mode == "imap":
                 if not mail_conn:
                     try:
@@ -716,7 +758,7 @@ def get_oai_code(
                             processed_mail_ids.add(mail_id)
                             print(f"[{cfg.ts()}] [SUCCESS] 提取成功: {code}")
                             return code
-            if mode == "luckmail":
+            elif mode == "luckmail":
                 if not jwt:
                     print(f"\n[{cfg.ts()}] [ERROR] LuckMail 缺少 token，无法提取验证码！")
                     return ""
@@ -731,7 +773,6 @@ def get_oai_code(
                         return code
                 except Exception as e:
                     pass
-
             else:
                 if jwt:
                     res = requests.get(
