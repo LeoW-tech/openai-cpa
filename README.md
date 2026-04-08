@@ -22,7 +22,7 @@ It also supports **random multi-level subdomain generation**, designed to work t
 ## 🚀 Supported Environments
 * **Windows**: Native Support (**Python 3.12.6 or Python 3.12** recommended).
 * **Linux**: Native Support (**AMD64** & **ARM64**).
-* **macOS**: Native Support (**Apple Silicon M1/M2/M3/M4**).
+* **macOS**: Native Support (**Apple Silicon M1/M2/M3/M4/intel**).
 * **Docker**: **Full Platform Support (Highly Recommended)**.
 * Multi-arch images provided for seamless deployment across all cloud and local environments.
 
