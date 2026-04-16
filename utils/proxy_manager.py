@@ -8,6 +8,7 @@ import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from utils.region_policy import is_openai_region_blocked
 
 CLASH_API_URL = ""
 LOCAL_PROXY_URL = ""
@@ -55,7 +56,7 @@ def reload_proxy_config():
     
     PROXY_GROUP_NAME = clash_conf.get("group_name", "节点选择")
     CLASH_SECRET = clash_conf.get("secret", "")
-    NODE_BLACKLIST = clash_conf.get("blacklist", ["港", "HK", "台", "TW", "中国", "CN"])
+    NODE_BLACKLIST = clash_conf.get("blacklist", ["台", "TW", "中国", "CN"])
    
     print(f"[{ts()}] [系统] 代理管理模块配置已同步更新。")
 
@@ -115,8 +116,7 @@ def test_proxy_liveness(proxy_url=None):
                 if line.startswith("loc="):
                     loc = line.split("=")[1].strip()
 
-            blocked_regions = ["CN", "HK"]
-            if loc in blocked_regions:
+            if is_openai_region_blocked(loc):
                 print(f"[{ts()}] [代理测活] {display_name} 地区受限 ({loc})，弃用！")
                 return False
                 

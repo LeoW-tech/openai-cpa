@@ -18,6 +18,7 @@ from utils import config as cfg
 from utils.email_providers.mail_service import get_email_and_token, get_oai_code, mask_email
 from utils.integrations.hero_sms import _try_verify_phone_via_hero_sms
 from utils.auth_core import generate_payload
+from utils.region_policy import is_openai_region_blocked
 
 AUTH_URL = "https://auth.openai.com/oauth/authorize"
 TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -418,7 +419,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
             )
             elapsed = time.time() - start
             loc = (re.search(r"^loc=(.+)$", res.text, re.MULTILINE) or [None, None])[1]
-            if loc in ("CN", "HK"):
+            if is_openai_region_blocked(loc):
                 raise RuntimeError(f"当前{proxies}代理所在地不支持 OpenAI ({loc})")
             print(f"[{cfg.ts()}] [INFO] 节点测活成功！地区: {loc} | 延迟: {elapsed:.2f}s")
         except Exception as e:

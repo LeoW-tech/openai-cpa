@@ -131,7 +131,7 @@ pip install -r requirements.txt
 - **Fastest-node preferred mode**: Supports `fastest_mode: true` for latency-based preferred selection.
 - **Multi-threaded Clash proxy-pool mode**: Supports a multi-container / multi-port proxy pool via `clash_proxy_pool.pool_mode` + `warp_proxy_list`.
 - **Docker-aware proxy adaptation**: Automatically rewrites `127.0.0.1` / `localhost` to `host.docker.internal` inside containers when needed.
-- **Region-aware liveness checks**: Verifies outbound connectivity and rejects blocked or unsuitable regions such as `CN` / `HK`.
+- **Region-aware liveness checks**: Verifies outbound connectivity and rejects blocked or unsuitable regions such as `CN`.
 - **Retry handling**: Includes retry and cooling logic for unstable networks, OTP polling, and temporary request failures.
 
 ### Inventory maintenance and warehouse operations
