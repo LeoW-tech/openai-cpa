@@ -292,6 +292,9 @@ createApp({
                         refresh_token: ''
                     };
                 }
+                if (this.config.sub2api_mode.test_model === undefined) {
+                    this.config.sub2api_mode.test_model = 'GPT-5.2';
+                }
                 if (!this.config.fvia) {
                     this.config.fvia = { token: '' };
                 }

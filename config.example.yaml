@@ -231,6 +231,7 @@ sub2api_mode:
   account_rate_multiplier: 1.0
   account_group_ids: ""
   enable_ws_mode: true
+  test_model: "gpt-5.2"
 
 hero_sms:
   enabled: false
@@ -239,6 +240,7 @@ hero_sms:
   country: 50
   service: dr
   auto_pick_country: false
+  verify_on_register: false
   reuse_phone: true
   max_price: 0.08
   min_balance: 1
