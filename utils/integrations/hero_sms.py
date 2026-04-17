@@ -113,6 +113,11 @@ _HERO_SMS_REUSE_STATE: dict[str, Any] = {
     "entries": [],
     "updated_at": 0.0,
 }
+_HERO_SMS_REUSE_STORAGE_STATUS: dict[str, Any] = {
+    "ok": True,
+    "scope": "system_kv",
+    "reason": "",
+}
 _HERO_SMS_COUNTRY_LOCK = threading.Lock()
 _HERO_SMS_COUNTRY_TIMEOUTS: dict[int, int] = {}
 _HERO_SMS_COUNTRY_COOLDOWN_UNTIL: dict[int, float] = {}
@@ -199,14 +204,30 @@ def _hero_sms_reuse_pool_entries() -> list[dict[str, Any]]:
     return [entry for entry in raw_entries if isinstance(entry, dict)]
 
 
+def _set_reuse_storage_status(ok: bool, reason: str = "") -> None:
+    _HERO_SMS_REUSE_STORAGE_STATUS["ok"] = bool(ok)
+    _HERO_SMS_REUSE_STORAGE_STATUS["scope"] = "system_kv"
+    _HERO_SMS_REUSE_STORAGE_STATUS["reason"] = str(reason or "").strip()
+
+
+def get_hero_sms_reuse_storage_health() -> dict[str, Any]:
+    return dict(_HERO_SMS_REUSE_STORAGE_STATUS)
+
+
 def _read_reuse_state_from_db() -> dict[str, Any]:
     saved = db_manager.get_sys_kv("sms_reuse_data")
+    _set_reuse_storage_status(True, "")
     return _normalize_reuse_state(saved)
 
 
 def _load_reuse_state_from_db():
     global _HERO_SMS_REUSE_STATE
-    normalized = _read_reuse_state_from_db()
+    try:
+        normalized = _read_reuse_state_from_db()
+    except db_manager.SystemKvStorageError as e:
+        _set_reuse_storage_status(False, str(e))
+        _warn(f"HeroSMS 复用池初始化读取失败: {e}")
+        return
     with _HERO_SMS_REUSE_LOCK:
         _HERO_SMS_REUSE_STATE.clear()
         _HERO_SMS_REUSE_STATE.update(normalized)
@@ -214,7 +235,12 @@ def _load_reuse_state_from_db():
 _load_reuse_state_from_db()
 
 def _sync_reuse_to_db():
-    db_manager.set_sys_kv("sms_reuse_data", get_hero_sms_reuse_pool_snapshot())
+    try:
+        db_manager.set_sys_kv("sms_reuse_data", get_hero_sms_reuse_pool_snapshot())
+        _set_reuse_storage_status(True, "")
+    except db_manager.SystemKvStorageError as e:
+        _set_reuse_storage_status(False, str(e))
+        _warn(f"HeroSMS 复用池写回失败: {e}")
 
 
 def _hero_sms_reuse_remove(activation_id: str) -> None:
@@ -232,7 +258,13 @@ def _hero_sms_reuse_remove(activation_id: str) -> None:
 
 
 def _hero_sms_reuse_sync_from_db(reason: str = "") -> dict[str, Any]:
-    normalized = _read_reuse_state_from_db()
+    try:
+        normalized = _read_reuse_state_from_db()
+    except db_manager.SystemKvStorageError as e:
+        _set_reuse_storage_status(False, str(e))
+        if reason:
+            _warn(f"HeroSMS 复用池读取失败，已停止本轮复用判断: reason={reason}, error={e}")
+        raise
     db_updated_at = float(normalized.get("updated_at") or 0.0)
     with _HERO_SMS_REUSE_LOCK:
         memory_before = float(_HERO_SMS_REUSE_STATE.get("updated_at") or 0.0)
@@ -1386,7 +1418,16 @@ def _try_verify_phone_via_hero_sms(
         reuse_on = _hero_sms_reuse_enabled()
 
         if reuse_on:
-            reuse_id, reuse_phone, reuse_used = _hero_sms_reuse_get(service_code, country_id)
+            try:
+                reuse_id, reuse_phone, reuse_used = _hero_sms_reuse_get(service_code, country_id)
+            except db_manager.SystemKvStorageError as e:
+                health = db_manager.get_system_kv_health()
+                _set_reuse_storage_status(False, str(e))
+                _warn(
+                    "HeroSMS 复用池存储异常，主动停止新购号码: "
+                    f"system_kv_ok={health.get('ok')}, reason={health.get('reason') or e}"
+                )
+                return False, "复用池存储异常，已停止新购号码，请先修复数据库"
             if reuse_id and reuse_phone:
                 _info(
                     "HeroSMS 尝试复用手机号: "

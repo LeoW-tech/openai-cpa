@@ -9,6 +9,33 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, "data.db")
 
+
+class SystemKvStorageError(RuntimeError):
+    """system_kv 读写层面的不可恢复存储错误。"""
+
+
+def _is_system_kv_storage_error(exc: Exception) -> bool:
+    if isinstance(exc, SystemKvStorageError):
+        return True
+    message = str(exc or "").lower()
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    return any(
+        marker in message
+        for marker in (
+            "database disk image is malformed",
+            "malformed",
+            "database corruption",
+            "database disk image is malformed",
+            "disk image is malformed",
+            "corrupt",
+        )
+    )
+
+
+def _raise_system_kv_storage_error(action: str, key: str, exc: Exception) -> None:
+    raise SystemKvStorageError(f"system_kv {action}失败: key={key}, error={exc}") from exc
+
 def ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
@@ -150,25 +177,54 @@ def get_accounts_page(page: int = 1, page_size: int = 50) -> dict:
 
 def set_sys_kv(key: str, value: Any):
     """保存任意数据到系统表"""
+    conn = None
     try:
         val_str = json.dumps(value, ensure_ascii=False)
-        with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            conn.execute("INSERT OR REPLACE INTO system_kv (key, value) VALUES (?, ?)", (key, val_str))
-            conn.commit()
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.execute("INSERT OR REPLACE INTO system_kv (key, value) VALUES (?, ?)", (key, val_str))
+        conn.commit()
     except Exception as e:
+        if _is_system_kv_storage_error(e):
+            _raise_system_kv_storage_error("写入", key, e)
         print(f"[{ts()}] [ERROR] 系统配置保存失败: {e}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 def get_sys_kv(key: str, default=None):
     """从系统表读取数据"""
+    conn = None
     try:
-        with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            cursor = conn.execute("SELECT value FROM system_kv WHERE key = ?", (key,))
-            row = cursor.fetchone()
-            if row:
-                return json.loads(row[0])
-    except Exception:
-        pass
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.execute("SELECT value FROM system_kv WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        if row:
+            return json.loads(row[0])
+    except Exception as e:
+        if _is_system_kv_storage_error(e):
+            _raise_system_kv_storage_error("读取", key, e)
+        print(f"[{ts()}] [ERROR] 系统配置读取失败: {e}")
+    finally:
+        if conn is not None:
+            conn.close()
     return default
+
+
+def get_system_kv_health() -> dict[str, Any]:
+    """检查 system_kv 是否可读。"""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.execute("SELECT key FROM system_kv LIMIT 1").fetchall()
+        return {"ok": True, "scope": "system_kv", "reason": ""}
+    except Exception as e:
+        reason = str(e)
+        if _is_system_kv_storage_error(e):
+            reason = f"system_kv 存储损坏: {e}"
+        return {"ok": False, "scope": "system_kv", "reason": reason}
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def get_all_accounts_with_token(limit: int = 10000) -> list:
