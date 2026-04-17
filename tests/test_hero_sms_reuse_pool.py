@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import ANY
 from unittest.mock import patch
 
-fake_requests_module = types.SimpleNamespace(get=None, post=None, Session=object)
+fake_requests_module = types.SimpleNamespace(get=None, post=None, Session=object, Response=object)
 sys.modules["curl_cffi"] = types.SimpleNamespace(requests=fake_requests_module, CurlMime=object)
 
 
