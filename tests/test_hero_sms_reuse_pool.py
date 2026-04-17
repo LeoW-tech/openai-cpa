@@ -170,18 +170,20 @@ class HeroSmsReusePoolTests(unittest.TestCase):
         session = object()
         storage_error = hero_sms.db_manager.SystemKvStorageError("system_kv 损坏")
 
-        with patch.object(hero_sms, "hero_sms_get_balance", return_value=(3.5, "")):
-            with patch.object(hero_sms, "_hero_sms_resolve_service_code", return_value="dr"):
-                with patch.object(hero_sms, "_hero_sms_resolve_country_id", return_value=52):
-                    with patch.object(hero_sms, "_hero_sms_pick_country_id", return_value=52):
-                        with patch.object(hero_sms, "_hero_sms_reuse_get", side_effect=storage_error):
-                            with patch.object(hero_sms, "_hero_sms_get_number") as get_number:
-                                with patch.object(hero_sms, "_warn") as warn_log:
-                                    ok, reason = hero_sms._try_verify_phone_via_hero_sms(
-                                        session,
-                                        proxies=None,
-                                        run_ctx={},
-                                    )
+        with patch.object(hero_sms.cfg, "HERO_SMS_ENABLED", True, create=True):
+            with patch.object(hero_sms.cfg, "HERO_SMS_API_KEY", "demo-key", create=True):
+                with patch.object(hero_sms, "hero_sms_get_balance", return_value=(3.5, "")):
+                    with patch.object(hero_sms, "_hero_sms_resolve_service_code", return_value="dr"):
+                        with patch.object(hero_sms, "_hero_sms_resolve_country_id", return_value=52):
+                            with patch.object(hero_sms, "_hero_sms_pick_country_id", return_value=52):
+                                with patch.object(hero_sms, "_hero_sms_reuse_get", side_effect=storage_error):
+                                    with patch.object(hero_sms, "_hero_sms_get_number") as get_number:
+                                        with patch.object(hero_sms, "_warn") as warn_log:
+                                            ok, reason = hero_sms._try_verify_phone_via_hero_sms(
+                                                session,
+                                                proxies=None,
+                                                run_ctx={},
+                                            )
 
         self.assertFalse(ok)
         self.assertEqual("复用池存储异常，已停止新购号码，请先修复数据库", reason)
@@ -192,20 +194,22 @@ class HeroSmsReusePoolTests(unittest.TestCase):
         hero_sms = self._reload_hero_sms(saved_state=None)
         session = object()
 
-        with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_PHONE", False, create=True):
-            with patch.object(hero_sms, "hero_sms_get_balance", return_value=(3.5, "")):
-                with patch.object(hero_sms, "_hero_sms_resolve_service_code", return_value="dr"):
-                    with patch.object(hero_sms, "_hero_sms_resolve_country_id", return_value=52):
-                        with patch.object(hero_sms, "_hero_sms_pick_country_id", return_value=52):
-                            with patch.object(hero_sms, "_hero_sms_reuse_get") as reuse_get:
-                                with patch.object(hero_sms, "_hero_sms_max_tries", return_value=1):
-                                    with patch.object(hero_sms, "_hero_sms_get_number", return_value=("", "", "NO_NUMBERS")) as get_number:
-                                        with patch.object(hero_sms, "_sleep_interruptible", return_value=False):
-                                            ok, reason = hero_sms._try_verify_phone_via_hero_sms(
-                                                session,
-                                                proxies=None,
-                                                run_ctx={},
-                                            )
+        with patch.object(hero_sms.cfg, "HERO_SMS_ENABLED", True, create=True):
+            with patch.object(hero_sms.cfg, "HERO_SMS_API_KEY", "demo-key", create=True):
+                with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_PHONE", False, create=True):
+                    with patch.object(hero_sms, "hero_sms_get_balance", return_value=(3.5, "")):
+                        with patch.object(hero_sms, "_hero_sms_resolve_service_code", return_value="dr"):
+                            with patch.object(hero_sms, "_hero_sms_resolve_country_id", return_value=52):
+                                with patch.object(hero_sms, "_hero_sms_pick_country_id", return_value=52):
+                                    with patch.object(hero_sms, "_hero_sms_reuse_get") as reuse_get:
+                                        with patch.object(hero_sms, "_hero_sms_max_tries", return_value=1):
+                                            with patch.object(hero_sms, "_hero_sms_get_number", return_value=("", "", "NO_NUMBERS")) as get_number:
+                                                with patch.object(hero_sms, "_sleep_interruptible", return_value=False):
+                                                    ok, reason = hero_sms._try_verify_phone_via_hero_sms(
+                                                        session,
+                                                        proxies=None,
+                                                        run_ctx={},
+                                                    )
 
         self.assertFalse(ok)
         self.assertEqual("取号失败: NO_NUMBERS", reason)
