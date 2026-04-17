@@ -60,7 +60,7 @@ class Sub2APIClientProxyBindingTests(unittest.TestCase):
         self.assertEqual(EXPECTED_MODEL_MAPPING, account["credentials"]["model_mapping"])
         self.assertIn("load_factor", account["extra"])
 
-    def test_add_account_without_proxy_name_uses_import_endpoint(self):
+    def test_add_account_without_proxy_name_uses_direct_create_endpoint(self):
         sub2api_client = self._reload_client_module()
         client = sub2api_client.Sub2APIClient(api_url="http://127.0.0.1:8080", api_key="demo-key")
         captured = {}
@@ -77,11 +77,10 @@ class Sub2APIClientProxyBindingTests(unittest.TestCase):
             })
 
         self.assertTrue(ok)
-        self.assertEqual("Sub2API account import succeeded", msg)
-        self.assertEqual("http://127.0.0.1:8080/api/v1/admin/accounts/data", captured["url"])
-        account = captured["json"]["data"]["accounts"][0]
+        self.assertEqual("Sub2API account created successfully", msg)
+        self.assertEqual("http://127.0.0.1:8080/api/v1/admin/accounts", captured["url"])
+        account = captured["json"]
         self.assertEqual("refresh-token", account["credentials"]["refresh_token"])
-        self.assertEqual(EXPECTED_MODEL_MAPPING, account["credentials"]["model_mapping"])
 
 
 if __name__ == "__main__":

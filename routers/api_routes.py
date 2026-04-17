@@ -11,7 +11,6 @@ import subprocess
 import yaml
 import urllib.parse
 import httpx
-import importlib
 from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -19,6 +18,27 @@ from typing import List, Optional, Any
 from cloudflare import Cloudflare
 from utils import core_engine, db_manager
 from utils.config import reload_all_configs
+try:
+    from utils.integrations.sub2api_client import Sub2APIClient, build_default_model_mapping as _build_default_sub2api_model_mapping
+except ImportError:
+    from utils.integrations.sub2api_client import Sub2APIClient
+
+    def _build_default_sub2api_model_mapping():
+        sub2api_module = sys.modules.get("utils.integrations.sub2api_client")
+        builder = getattr(sub2api_module, "build_default_model_mapping", None)
+        if callable(builder):
+            return builder()
+        return {
+            "gpt-5.1": "gpt-5.1",
+            "gpt-5.1-codex": "gpt-5.1-codex",
+            "gpt-5.1-codex-max": "gpt-5.1-codex-max",
+            "gpt-5.1-codex-mini": "gpt-5.1-codex-mini",
+            "gpt-5.2": "gpt-5.2",
+            "gpt-5.2-codex": "gpt-5.2-codex",
+            "gpt-5.3": "gpt-5.3",
+            "gpt-5.3-codex": "gpt-5.3-codex",
+            "gpt-5.4": "gpt-5.4",
+        }
 from utils.integrations.tg_notifier import send_tg_msg_async
 from utils.email_providers.gmail_oauth_handler import GmailOAuthHandler
 from curl_cffi import requests as cffi_requests
@@ -32,20 +52,6 @@ CONFIG_PATH = os.path.join(BASE_DIR, "data", "config.yaml")
 GMAIL_CLIENT_SECRETS = os.path.join(BASE_DIR, "data", "credentials.json")
 GMAIL_TOKEN_PATH = os.path.join(BASE_DIR, "data", "token.json")
 GMAIL_VERIFIER_PATH = os.path.join(BASE_DIR, "data", "temp_verifier.txt")
-
-sub2api_client_module = importlib.import_module("utils.integrations.sub2api_client")
-Sub2APIClient = getattr(sub2api_client_module, "Sub2APIClient")
-DEFAULT_SUB2API_MODEL_IDS = (
-    "gpt-5.1",
-    "gpt-5.1-codex",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex-mini",
-    "gpt-5.2",
-    "gpt-5.2-codex",
-    "gpt-5.3",
-    "gpt-5.3-codex",
-    "gpt-5.4",
-)
 
 class DummyArgs:
     def __init__(self, proxy=None, once=False):
@@ -120,18 +126,6 @@ class UpdateMailboxStatusReq(BaseModel):
 # ==========================================
 # 辅助函数
 # ==========================================
-def _build_default_sub2api_model_mapping() -> dict[str, str]:
-    builder = getattr(sub2api_client_module, "build_default_model_mapping", None)
-    if callable(builder):
-        try:
-            mapping = builder()
-            if isinstance(mapping, dict) and mapping:
-                return mapping
-        except Exception:
-            pass
-    return {model_id: model_id for model_id in DEFAULT_SUB2API_MODEL_IDS}
-
-
 def get_web_password():
     try:
         if os.path.exists(CONFIG_PATH):
@@ -201,17 +195,11 @@ def _is_placeholder_remote_value(value: Any) -> bool:
     return "your-domain.com" in text or "example.com" in text
 
 
-def _is_sub2api_cloud_enabled() -> bool:
-    return bool(
-        getattr(cfg, "ENABLE_SUB2API_MODE", False)
-        and str(getattr(cfg, "SUB2API_URL", "") or "").strip()
-        and str(getattr(cfg, "SUB2API_KEY", "") or "").strip()
-    )
-
-
 def _is_cpa_cloud_enabled() -> bool:
-    return bool(
-        getattr(cfg, "ENABLE_CPA_MODE", False)
+    return (
+        bool(getattr(cfg, "ENABLE_CPA_MODE", False))
+        and bool(getattr(cfg, "CPA_API_URL", None))
+        and bool(getattr(cfg, "CPA_API_TOKEN", None))
         and not _is_placeholder_remote_value(getattr(cfg, "CPA_API_URL", ""))
         and not _is_placeholder_remote_value(getattr(cfg, "CPA_API_TOKEN", ""))
     )
@@ -372,10 +360,8 @@ async def restart_system(token: str = Depends(verify_token)):
 
 @router.get("/api/config")
 async def get_config(token: str = Depends(verify_token)):
-    config_data = {}
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            config_data = yaml.safe_load(f) or {}
+    config_data = getattr(core_engine.cfg, '_c', {}).copy()
+
     if isinstance(config_data.get("sub2api_mode"), dict):
         config_data["sub2api_mode"].pop("min_remaining_weekly_percent", None)
     config_data["web_password"] = config_data.get("web_password", "admin")
@@ -386,8 +372,6 @@ async def get_config(token: str = Depends(verify_token)):
             "client_id": "",
             "refresh_token": ""
         }
-
-
     return config_data
 
 
@@ -396,14 +380,9 @@ async def save_config(new_config: dict, token: str = Depends(verify_token)):
     try:
         if isinstance(new_config.get("sub2api_mode"), dict):
             new_config["sub2api_mode"].pop("min_remaining_weekly_percent", None)
-        with core_engine.cfg.CONFIG_FILE_LOCK:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                yaml.dump(new_config, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
-        try:
-            reload_all_configs()
-        except Exception:
-            pass
-        return {"status": "success", "message": "✅ 配置已成功保存！"}
+        reload_all_configs(new_config_dict=new_config)
+
+        return {"status": "success", "message": "✅ 配置已成功保存并同步至云端！"}
     except Exception as e:
         return {"status": "error", "message": f"❌ 保存失败: {str(e)}"}
 
@@ -546,6 +525,9 @@ def account_action(data: dict, token: str = Depends(verify_token)):
         elif action == "push_sub2api":
             if not getattr(core_engine.cfg, 'ENABLE_SUB2API_MODE', False): return {"status": "error",
                                                                                    "message": "🚫 推送失败：未开启 Sub2API 模式！"}
+            proxy_obj = parse_sub2api_proxy(cfg.SUB2API_DEFAULT_PROXY)
+            if proxy_obj:
+                token_data["sub2api_proxy"] = proxy_obj
             client = Sub2APIClient(api_url=getattr(core_engine.cfg, 'SUB2API_URL', ''),
                                    api_key=getattr(core_engine.cfg, 'SUB2API_KEY', ''))
             success, resp = client.add_account(token_data)
@@ -563,9 +545,10 @@ async def export_sub2api_accounts(req: ExportReq, token: str = Depends(verify_to
         if not tokens: return {"status": "error", "message": "未提取到Token"}
 
         sub2api_settings = getattr(core_engine.cfg, '_c', {}).get("sub2api_mode", {})
+        proxy_obj = parse_sub2api_proxy(cfg.SUB2API_DEFAULT_PROXY)
         accounts_list = []
         for td in tokens:
-            account_item = {
+            acc = {
                 "name": str(td.get("email", "unknown"))[:64],
                 "platform": "openai", "type": "oauth",
                 "credentials": {
@@ -579,10 +562,12 @@ async def export_sub2api_accounts(req: ExportReq, token: str = Depends(verify_to
             }
             proxy_name = str(td.get("sub2api_proxy_name", "") or "").strip()
             if proxy_name:
-                account_item["proxy_name"] = proxy_name
-            accounts_list.append(account_item)
+                acc["proxy_name"] = proxy_name
+            if proxy_obj:
+                acc["proxy_key"] = proxy_obj["proxy_key"]
+            accounts_list.append(acc)
         return {"status": "success",
-                "data": {"exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "proxies": [],
+                "data": {"exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "proxies": [proxy_obj] if proxy_obj else [],
                          "accounts": accounts_list}}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -594,7 +579,7 @@ def get_cloud_accounts(types: str = "sub2api,cpa", page: int = Query(1), page_si
     type_list = types.split(",")
     combined_data = []
     try:
-        if "sub2api" in type_list and _is_sub2api_cloud_enabled():
+        if "sub2api" in type_list and getattr(cfg, 'SUB2API_URL', None) and getattr(cfg, 'SUB2API_KEY', None):
             client = Sub2APIClient(api_url=cfg.SUB2API_URL, api_key=cfg.SUB2API_KEY)
             success, raw_sub2_data = client.get_all_accounts()
             if success:
@@ -643,7 +628,10 @@ def process_cloud_action(req: CloudActionReq, token: str = Depends(verify_token)
     from concurrent.futures import ThreadPoolExecutor
 
     success_count, fail_count, updated_details_map = 0, 0, {}
-    sub2api_client = Sub2APIClient(api_url=cfg.SUB2API_URL, api_key=cfg.SUB2API_KEY) if _is_sub2api_cloud_enabled() else None
+    sub2api_client = Sub2APIClient(api_url=cfg.SUB2API_URL, api_key=cfg.SUB2API_KEY) if getattr(cfg, 'SUB2API_URL',
+                                                                                                None) and getattr(cfg,
+                                                                                                                  'SUB2API_KEY',
+                                                                                                                  None) else None
 
     cpa_files_map = {}
     if any(a.type == "cpa" for a in req.accounts) and req.action == "check" and _is_cpa_cloud_enabled():
@@ -1093,8 +1081,7 @@ async def get_mailboxes(page: int = Query(1), page_size: int = Query(50), token:
         result = db_manager.get_local_mailboxes_page(page, page_size)
         return {"status": "success", "data": result["data"], "total": result["total"], "page": page, "page_size": page_size}
     except Exception as e:
-        print(f"[{core_engine.ts()}] [ERROR] 邮箱库读取失败: {e}")
-        return {"status": "error", "message": "邮箱库读取失败，请稍后重试"}
+        return {"status": "error", "message": str(e)}
 
 
 @router.post("/api/mailboxes/import")
@@ -1176,13 +1163,17 @@ async def exchange_outlook_oauth_code(req: OutlookExchangeReq, token: str = Depe
         if response.status_code == 200:
             refresh_token = data.get("refresh_token")
             import sqlite3
-            from utils.db_manager import DB_PATH
-            with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                conn.execute(
-                    "UPDATE local_mailboxes SET client_id = ?, refresh_token = ?, status = 0 WHERE email = ?",
-                    (req.client_id, refresh_token, req.email)
-                )
-                conn.commit()
+            from utils.db_manager import get_db_conn, get_cursor, execute_sql
+            try:
+                with get_db_conn() as conn:
+                    c = get_cursor(conn)
+                    execute_sql(c,
+                                "UPDATE local_mailboxes SET client_id = ?, refresh_token = ?, status = 0 WHERE email = ?",
+                                (req.client_id, refresh_token, req.email)
+                                )
+            except Exception as e:
+                print(f"[ERROR] 数据库更新 OAuth Token 失败: {e}")
+
             return {"status": "success", "message": f"授权成功！已为 {req.email} 绑定永久 Token。", "refresh_token": refresh_token}
         else:
             return {"status": "error", "message": f"获取失败: {data.get('error_description', data)}"}
@@ -1207,7 +1198,23 @@ async def update_mailboxes_status(req: UpdateMailboxStatusReq, token: str = Depe
 
     return {"status": "success", "message": f"成功将 {success_count} 个邮箱状态重置！"}
 
-import utils.integrations.clash_manager as clash_manager
+try:
+    import utils.integrations.clash_manager as clash_manager
+except ImportError:
+    class _FallbackClashManager:
+        @staticmethod
+        def get_pool_status():
+            return {"error": "clash_manager unavailable"}
+
+        @staticmethod
+        def deploy_clash_pool(count):
+            return False, "clash_manager unavailable"
+
+        @staticmethod
+        def patch_and_update(sub_url, target):
+            return False, "clash_manager unavailable"
+
+    clash_manager = _FallbackClashManager()
 
 class ClashDeployReq(BaseModel):
     count: int
@@ -1232,3 +1239,37 @@ async def post_clash_deploy(req: ClashDeployReq, token: str = Depends(verify_tok
 async def post_clash_update(req: ClashUpdateReq, token: str = Depends(verify_token)):
     success, msg = clash_manager.patch_and_update(req.sub_url, req.target)
     return {"status": "success" if success else "error", "message": msg}
+
+
+def parse_sub2api_proxy(proxy_url: str):
+    """提取代理URL为Sub2API所需格式"""
+    if not proxy_url:
+        return None
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(proxy_url)
+        protocol = parsed.scheme
+        host = parsed.hostname
+        port = parsed.port
+        username = parsed.username or ""
+        password = parsed.password or ""
+
+        if not protocol or not host or not port:
+            return None
+
+        proxy_key = f"{protocol}|{host}|{port}|{username}|{password}"
+        proxy_dict = {
+            "proxy_key": proxy_key,
+            "name": "openai-cpa",
+            "protocol": protocol,
+            "host": host,
+            "port": port,
+            "status": "active"
+        }
+        if username and password:
+            proxy_dict["username"] = username
+            proxy_dict["password"] = password
+
+        return proxy_dict
+    except:
+        return None

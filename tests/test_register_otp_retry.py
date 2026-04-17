@@ -256,7 +256,7 @@ class RegisterOtpRetryTests(unittest.TestCase):
         self.assertEqual([call(10), call(20), call(30)], sleep_mock.call_args_list)
 
     def test_run_uses_shared_otp_retry_helper_in_four_validate_call_sites(self):
-        source = Path("/Users/meilinwang/Projects/openai-cpa-Public/utils/register.py").read_text(encoding="utf-8")
+        source = Path(self.register.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
 
         run_fn = next(

@@ -23,6 +23,18 @@ EXPECTED_MODEL_MAPPING = {
 class ApiRoutesSub2ApiExportTests(unittest.TestCase):
     def setUp(self):
         self._module_stack = ExitStack()
+        clash_manager_stub = types.SimpleNamespace(
+            list_instances=lambda *args, **kwargs: [],
+            create_pool=lambda *args, **kwargs: {"status": "success"},
+            delete_pool=lambda *args, **kwargs: {"status": "success"},
+            get_container_ip=lambda *args, **kwargs: None,
+            get_controller_base=lambda *args, **kwargs: None,
+            sync_subscription=lambda *args, **kwargs: {"status": "success"},
+            refresh_instance=lambda *args, **kwargs: {"status": "success"},
+            patch_and_update=lambda *args, **kwargs: {"status": "success"},
+        )
+        integrations_stub = types.ModuleType("utils.integrations")
+        integrations_stub.clash_manager = clash_manager_stub
         self._module_stack.enter_context(
             patch.dict(
                 sys.modules,
@@ -32,6 +44,7 @@ class ApiRoutesSub2ApiExportTests(unittest.TestCase):
                         reload_proxy_config=lambda *args, **kwargs: None,
                         get_last_success_node_name=lambda *args, **kwargs: None,
                     ),
+                    "curl_cffi": types.SimpleNamespace(requests=types.SimpleNamespace(get=None, post=None), CurlMime=object),
                     "utils.integrations.sub2api_client": types.SimpleNamespace(
                         Sub2APIClient=object,
                         build_default_model_mapping=lambda: EXPECTED_MODEL_MAPPING.copy(),
@@ -44,17 +57,9 @@ class ApiRoutesSub2ApiExportTests(unittest.TestCase):
                         run=lambda *args, **kwargs: None,
                         refresh_oauth_token=lambda *args, **kwargs: (False, {}),
                     ),
+                    "utils.integrations": integrations_stub,
                     "utils.email_providers.gmail_oauth_handler": types.SimpleNamespace(GmailOAuthHandler=object),
-                    "utils.integrations.clash_manager": types.SimpleNamespace(
-                        list_instances=lambda *args, **kwargs: [],
-                        create_pool=lambda *args, **kwargs: {"status": "success"},
-                        delete_pool=lambda *args, **kwargs: {"status": "success"},
-                        get_container_ip=lambda *args, **kwargs: None,
-                        get_controller_base=lambda *args, **kwargs: None,
-                        sync_subscription=lambda *args, **kwargs: {"status": "success"},
-                        refresh_instance=lambda *args, **kwargs: {"status": "success"},
-                        patch_and_update=lambda *args, **kwargs: {"status": "success"},
-                    ),
+                    "utils.integrations.clash_manager": clash_manager_stub,
                     "cloudflare": types.SimpleNamespace(Cloudflare=object),
                 },
             )

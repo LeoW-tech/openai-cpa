@@ -39,7 +39,7 @@ class Sub2APIClient:
 
     def _handle_response(
         self,
-        response: cffi_requests.Response,
+        response: Any,
         success_codes: Tuple[int, ...] = (200, 201, 204),
     ) -> Tuple[bool, Any]:
         if response.status_code in success_codes:
@@ -131,7 +131,7 @@ class Sub2APIClient:
         exported_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         extra = self._build_account_extra(settings)
         proxy_name = str(token_data.get("sub2api_proxy_name", "") or "").strip()
-
+        proxy_obj = token_data.get("sub2api_proxy")
         account_item = {
             "name": token_data.get("email", "unknown"),
             "platform": "openai",
@@ -157,12 +157,14 @@ class Sub2APIClient:
         if settings["group_ids"]:
             account_item["group_ids"] = settings["group_ids"]
 
+        if proxy_obj and "proxy_key" in proxy_obj:
+            account_item["proxy_key"] = proxy_obj["proxy_key"]
         payload = {
             "data": {
                 "type": "sub2api-data",
                 "version": 1,
                 "exported_at": exported_at,
-                "proxies": [],
+                "proxies": [proxy_obj] if proxy_obj else [],
                 "accounts": [account_item],
             },
             "skip_default_group_bind": not bool(settings["group_ids"]),
@@ -233,7 +235,50 @@ class Sub2APIClient:
 
     def add_account(self, token_data: Dict[str, Any]) -> Tuple[bool, str]:
         settings = self._get_push_settings()
-        return self._import_account(token_data, settings)
+        refresh_token = token_data.get("refresh_token", "")
+        proxy_obj = token_data.get("sub2api_proxy")
+        proxy_name = str(token_data.get("sub2api_proxy_name", "") or "").strip()
+        if not refresh_token or proxy_obj or proxy_name:
+            return self._import_account(token_data, settings)
+
+        url = f"{self.api_url}/api/v1/admin/accounts"
+        payload = {
+            "name": token_data.get("email", "unknown")[:64],
+            "platform": "openai",
+            "type": "oauth",
+            "credentials": {"refresh_token": refresh_token},
+            "concurrency": settings["concurrency"],
+            "priority": settings["priority"],
+            "rate_multiplier": settings["rate_multiplier"],
+            "extra": self._build_account_extra(settings),
+        }
+        if proxy_obj and "proxy_key" in proxy_obj:
+            payload["proxy_key"] = proxy_obj["proxy_key"]
+
+        if settings["group_ids"]:
+            payload["group_ids"] = settings["group_ids"]
+
+        try:
+            response = cffi_requests.post(
+                url,
+                json=payload,
+                headers=self.headers,
+                timeout=30,
+                impersonate="chrome110",
+                proxies=None,
+            )
+            ok, result = self._handle_response(response, success_codes=(200, 201))
+            if not ok:
+                logger.warning("Sub2API direct create failed, falling back to import endpoint: %s", result)
+                return self._import_account(token_data, settings)
+
+            account_id = result.get("data", {}).get("id") if isinstance(result, dict) else None
+            if account_id:
+                self._refresh_created_account(str(account_id))
+            return True, "Sub2API account created successfully"
+        except Exception as exc:
+            logger.warning("Sub2API direct create raised an exception, falling back to import: %s", exc)
+            return self._import_account(token_data, settings)
 
     def update_account(self, account_id: str, update_data: Dict[str, Any]) -> Tuple[bool, Any]:
         url = f"{self.api_url}/api/v1/admin/accounts/{account_id}"

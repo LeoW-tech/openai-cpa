@@ -9,6 +9,7 @@
 import argparse
 import asyncio
 import builtins
+import importlib
 import io
 import json
 import os
@@ -33,7 +34,20 @@ from utils.register import run, refresh_oauth_token as _refresh_oauth_token
 from utils.proxy_manager import get_last_success_node_name, smart_switch_node
 from utils.integrations.sub2api_client import Sub2APIClient
 from utils.integrations.tg_notifier import send_tg_msg_sync
-from utils.integrations import hero_sms
+
+try:
+    from utils.integrations import hero_sms
+except ImportError:
+    try:
+        hero_sms = importlib.import_module("utils.integrations.hero_sms")
+    except Exception:
+        class _FallbackHeroSms:
+            @staticmethod
+            def confirm_pending_hero_sms_usage(run_ctx):
+                return False
+
+        hero_sms = _FallbackHeroSms()
+
 
 _stats_lock = threading.Lock()
 sub_fail_counts = {}
@@ -56,13 +70,32 @@ KNOWN_CLIPROXY_ERROR_LABELS = {
     "unsupported_region":   "地区不支持",
 }
 
-log_queue = queue.Queue(maxsize=500)
 if not hasattr(builtins, "_openai_cpa_real_print"):
     builtins._openai_cpa_real_print = builtins.print
 _orig_print  = builtins._openai_cpa_real_print
 _thread_local = threading.local()
 _print_lock   = threading.Lock()
 
+
+class FakeLogQueue:
+    def put_nowait(self, item):
+        try:
+            from global_state import append_log
+            if isinstance(item, str):
+                append_log(item.strip())
+            else:
+                append_log(str(item).strip())
+        except Exception:
+            pass
+    def put(self, item, block=True, timeout=None):
+        self.put_nowait(item)
+
+    def empty(self):
+        return True
+
+    def qsize(self):
+        return 0
+log_queue = FakeLogQueue()
 
 def web_print(*args, **kwargs):
     if "file" in kwargs and kwargs["file"] is not None:
@@ -79,13 +112,14 @@ def web_print(*args, **kwargs):
             msg = _thread_local.buffer.lstrip("\n")
             if msg and msg.strip() != ".":
                 try:
-                    log_queue.put_nowait(msg.strip())
-                except queue.Full:
+                    from global_state import append_log
+                    append_log(msg.strip())
+                except Exception:
                     pass
         _thread_local.buffer = ""
 
-if builtins.print is not web_print:
-    builtins.print = web_print
+
+builtins.print = web_print
 
 def _load_dotenv(path: str = ".env") -> None:
     if not os.path.exists(path):
@@ -485,8 +519,6 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
     if getattr(cfg, 'GLOBAL_STOP', False):
         return "stopped"
     global run_stats
-    if run_ctx is not None:
-        run_ctx["local_account_saved"] = False
 
     last_email = mail_service.get_last_email()
     if not last_email or "@" not in last_email:
@@ -501,6 +533,8 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
         is_raw = True
 
     is_dead = False
+    if run_ctx is not None and "local_account_saved" not in run_ctx:
+        run_ctx["local_account_saved"] = False
     if run_ctx:
         if run_ctx.get('pwd_blocked'):
             with _stats_lock: run_stats["pwd_blocked"] += 1
@@ -539,7 +573,7 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
             
     else:
         with _stats_lock: run_stats["success"] += 1
-        token_data    = _apply_sub2api_proxy_name(json.loads(token_json_str), run_ctx)
+        token_data = _apply_sub2api_proxy_name(json.loads(token_json_str), run_ctx)
         account_email = token_data.get("email", "unknown")
         token_json_str = json.dumps(token_data, ensure_ascii=False, separators=(",", ":"))
 
@@ -594,6 +628,7 @@ def confirm_sub2api_hero_sms_usage(status: str, run_ctx: dict, sub2api_ok: bool)
         return False
     return bool(hero_sms.confirm_pending_hero_sms_usage(run_ctx))
 
+
 def _apply_sub2api_proxy_name(token_data: dict, run_ctx: dict = None, proxy_url: str = None) -> dict:
     if not isinstance(token_data, dict):
         return token_data
@@ -610,6 +645,7 @@ def _apply_sub2api_proxy_name(token_data: dict, run_ctx: dict = None, proxy_url:
         if isinstance(run_ctx, dict):
             run_ctx["sub2api_proxy_name"] = proxy_name
     return updated
+
 
 def _sync_run_ctx_proxy_name(run_ctx: dict = None, proxy_url: str = None) -> None:
     if not isinstance(run_ctx, dict):
@@ -1195,18 +1231,16 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event):
                     if not skip_switch:
                         if not smart_switch_node(p):
                             print(f"[{ts()}] [WARNING] [Sub2API补货] 全局节点切换失败...")
-                    run_ctx = {"hero_sms_counting_mode": "deferred_sub2api"}
-                    _sync_run_ctx_proxy_name(run_ctx, p)
+                    run_ctx = {}
                     result = run(p, run_ctx=run_ctx)
                     status = handle_registration_result(result, cpa_upload=False, run_ctx=run_ctx)
 
                     if status == "success":
-                        token_dict = _apply_sub2api_proxy_name(json.loads(result[0]), run_ctx, p)
+                        token_dict = json.loads(result[0])
                         if hasattr(client, "add_account"):
                             ok, msg = client.add_account(token_dict)
                             if ok: print(f"[{ts()}] [SUCCESS] Sub2API 补货入库成功")
                             else: print(f"[{ts()}] [ERROR] Sub2API 补货入库失败: {msg}")
-                            confirm_sub2api_hero_sms_usage(status=status, run_ctx=run_ctx, sub2api_ok=ok)
                     return status
 
                 def _sub2api_worker():
@@ -1322,7 +1356,6 @@ def main() -> None:
 
 class RegEngine:
     """GUI 用控制类，封装线程/协程生命周期。"""
-
     def __init__(self):
         self.thread_stop_event = threading.Event()
         self.async_stop_event  = None
