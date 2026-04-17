@@ -411,7 +411,8 @@ def _hero_sms_reuse_clear() -> None:
 
 
 def _hero_sms_is_deferred_counting(run_ctx: Optional[dict[str, Any]]) -> bool:
-    return bool(run_ctx and run_ctx.get("hero_sms_counting_mode") == "deferred_sub2api")
+    mode = str(run_ctx.get("hero_sms_counting_mode") or "").strip() if isinstance(run_ctx, dict) else ""
+    return mode in {"deferred_sub2api", "deferred_local_save"}
 
 
 def _hero_sms_record_pending_usage(

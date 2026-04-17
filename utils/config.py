@@ -174,6 +174,7 @@ HERO_SMS_MAX_PRICE: float = 2.0
 HERO_SMS_MIN_BALANCE: float = 2.0
 HERO_SMS_MAX_TRIES: int = 3
 HERO_SMS_POLL_TIMEOUT_SEC: int = 120
+HERO_SMS_REUSE_MAX_USES: int = 2
 NORMAL_SLEEP_MIN: int = 5
 NORMAL_SLEEP_MAX: int = 30
 NORMAL_TARGET_COUNT: int = 0
@@ -228,7 +229,7 @@ def reload_all_configs(new_config_dict=None):
     global LUCKMAIL_API_KEY, LUCKMAIL_PREFERRED_DOMAIN, LUCKMAIL_EMAIL_TYPE, LUCKMAIL_VARIANT_MODE, LUCKMAIL_REUSE_PURCHASED, LUCKMAIL_TAG_ID
     global HERO_SMS_ENABLED, HERO_SMS_API_KEY, HERO_SMS_BASE_URL, HERO_SMS_COUNTRY, HERO_SMS_SERVICE
     global HERO_SMS_AUTO_PICK_COUNTRY, HERO_SMS_REUSE_PHONE, HERO_SMS_MAX_PRICE, HERO_SMS_VERIFY_ON_REGISTER
-    global HERO_SMS_MIN_BALANCE, HERO_SMS_MAX_TRIES, HERO_SMS_POLL_TIMEOUT_SEC
+    global HERO_SMS_MIN_BALANCE, HERO_SMS_MAX_TRIES, HERO_SMS_POLL_TIMEOUT_SEC, HERO_SMS_REUSE_MAX_USES
     global AI_API_BASE, AI_API_KEY, AI_MODEL, AI_ENABLE_PROFILE
     global CPA_AUTO_CHECK, SUB2API_AUTO_CHECK
     global TG_BOT
@@ -483,6 +484,11 @@ def reload_all_configs(new_config_dict=None):
         HERO_SMS_POLL_TIMEOUT_SEC = int(_hero_sms_conf.get("poll_timeout_sec", 120))
     except:
         HERO_SMS_POLL_TIMEOUT_SEC = 120
+
+    try:
+        HERO_SMS_REUSE_MAX_USES = max(1, int(_hero_sms_conf.get("reuse_max_uses", 2)))
+    except:
+        HERO_SMS_REUSE_MAX_USES = 2
 
     _ai = _c.get("ai_service", {})
     AI_API_BASE = str(_ai.get("api_base", "https://api.openai.com/v1")).strip().rstrip("/")

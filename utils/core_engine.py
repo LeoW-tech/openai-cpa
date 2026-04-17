@@ -617,16 +617,18 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
     return ret_status
 
 
-def confirm_sub2api_hero_sms_usage(status: str, run_ctx: dict, sub2api_ok: bool) -> bool:
+def confirm_effective_hero_sms_usage(status: str, run_ctx: dict) -> bool:
     if status != "success":
         return False
     if not isinstance(run_ctx, dict):
         return False
     if not bool(run_ctx.get("local_account_saved")):
         return False
-    if not sub2api_ok:
-        return False
     return bool(hero_sms.confirm_pending_hero_sms_usage(run_ctx))
+
+
+def confirm_sub2api_hero_sms_usage(status: str, run_ctx: dict, sub2api_ok: bool) -> bool:
+    return confirm_effective_hero_sms_usage(status, run_ctx)
 
 
 def _apply_sub2api_proxy_name(token_data: dict, run_ctx: dict = None, proxy_url: str = None) -> dict:
@@ -654,6 +656,15 @@ def _sync_run_ctx_proxy_name(run_ctx: dict = None, proxy_url: str = None) -> Non
     if proxy_name:
         run_ctx["sub2api_proxy_name"] = proxy_name
 
+
+def add_result_account_to_sub2api(client: Any, result: Any, run_ctx: dict = None, proxy_url: str = None):
+    if not result or not isinstance(result, (tuple, list)) or not result[0]:
+        return False, "missing token result", None
+
+    token_dict = _apply_sub2api_proxy_name(json.loads(result[0]), run_ctx, proxy_url)
+    ok, msg = client.add_account(token_dict)
+    return ok, msg, token_dict
+
 def run_and_refresh(proxy, args, cpa_upload=False, skip_switch=False):
     proxy = format_docker_url(proxy)
     """切节点 → 注册 → 处理结果。"""
@@ -662,14 +673,16 @@ def run_and_refresh(proxy, args, cpa_upload=False, skip_switch=False):
             print(f"[{ts()}] [WARNING] {proxy} 节点切换失败，将使用当前 IP 继续尝试...")
     
     result = None
-    run_ctx = {}
+    run_ctx = {"hero_sms_counting_mode": "deferred_local_save"}
     _sync_run_ctx_proxy_name(run_ctx, proxy)
     try:
         result = run(proxy, run_ctx=run_ctx)
     except Exception as e:
         print(f"[{ts()}] [ERROR] 注册线程发生未捕获异常{e}")
 
-    return handle_registration_result(result, cpa_upload=cpa_upload, run_ctx=run_ctx)
+    status = handle_registration_result(result, cpa_upload=cpa_upload, run_ctx=run_ctx)
+    confirm_effective_hero_sms_usage(status, run_ctx)
+    return status
 
 # def auto_heal_subdomain(failed_domain: str):
     # print(f"[{ts()}] [自愈] 域名 {failed_domain} 达到失败阈值，触发更替程序...")
@@ -1231,16 +1244,17 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event):
                     if not skip_switch:
                         if not smart_switch_node(p):
                             print(f"[{ts()}] [WARNING] [Sub2API补货] 全局节点切换失败...")
-                    run_ctx = {}
+                    run_ctx = {"hero_sms_counting_mode": "deferred_sub2api"}
+                    _sync_run_ctx_proxy_name(run_ctx, p)
                     result = run(p, run_ctx=run_ctx)
                     status = handle_registration_result(result, cpa_upload=False, run_ctx=run_ctx)
 
                     if status == "success":
-                        token_dict = json.loads(result[0])
                         if hasattr(client, "add_account"):
-                            ok, msg = client.add_account(token_dict)
+                            ok, msg, _ = add_result_account_to_sub2api(client, result, run_ctx=run_ctx, proxy_url=p)
                             if ok: print(f"[{ts()}] [SUCCESS] Sub2API 补货入库成功")
                             else: print(f"[{ts()}] [ERROR] Sub2API 补货入库失败: {msg}")
+                        confirm_effective_hero_sms_usage(status, run_ctx)
                     return status
 
                 def _sub2api_worker():

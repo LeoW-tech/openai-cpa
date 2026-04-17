@@ -53,6 +53,11 @@ class ApiRoutesSub2ApiExportTests(unittest.TestCase):
                         send_tg_msg_sync=lambda *args, **kwargs: None,
                         send_tg_msg_async=lambda *args, **kwargs: None,
                     ),
+                    "utils.email_providers.mail_service": types.SimpleNamespace(
+                        clear_sticky_domain=lambda: None,
+                        mask_email=lambda value, force_mask=False: value,
+                        get_last_email=lambda: "demo@example.com",
+                    ),
                     "utils.register": types.SimpleNamespace(
                         run=lambda *args, **kwargs: None,
                         refresh_oauth_token=lambda *args, **kwargs: (False, {}),

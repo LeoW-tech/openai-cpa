@@ -121,7 +121,7 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
         scenarios = [
             ("failed", True, True, False),
             ("success", False, True, False),
-            ("success", True, False, False),
+            ("success", True, False, True),
             ("success", True, True, True),
         ]
 
@@ -139,6 +139,47 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
                         confirm_usage.assert_called_once_with(run_ctx)
                     else:
                         confirm_usage.assert_not_called()
+
+    def test_confirm_effective_usage_only_depends_on_local_save_gate(self):
+        core_engine = self._reload_core_engine()
+        run_ctx = {"local_account_saved": True, "hero_sms_pending_usage": {"activation_id": "reuse-1"}}
+
+        with patch.object(core_engine.hero_sms, "confirm_pending_hero_sms_usage", return_value=True) as confirm_usage:
+            self.assertTrue(core_engine.confirm_effective_hero_sms_usage("success", run_ctx))
+
+        confirm_usage.assert_called_once_with(run_ctx)
+
+        with patch.object(core_engine.hero_sms, "confirm_pending_hero_sms_usage") as confirm_usage:
+            self.assertFalse(core_engine.confirm_effective_hero_sms_usage("failed", run_ctx))
+            self.assertFalse(core_engine.confirm_effective_hero_sms_usage("success", {"local_account_saved": False}))
+
+        confirm_usage.assert_not_called()
+
+    def test_add_result_account_to_sub2api_applies_proxy_name_before_remote_push(self):
+        core_engine = self._reload_core_engine()
+        result = (json.dumps({"email": "demo@example.com", "refresh_token": "rt-demo"}), "Password123!")
+        run_ctx = {"sub2api_proxy_name": "🇯🇵 日本W03 | IEPL"}
+
+        class _FakeClient:
+            def __init__(self):
+                self.payload = None
+
+            def add_account(self, payload):
+                self.payload = payload
+                return True, "ok"
+
+        client = _FakeClient()
+        ok, msg, token_dict = core_engine.add_result_account_to_sub2api(
+            client=client,
+            result=result,
+            run_ctx=run_ctx,
+            proxy_url="http://127.0.0.1:7890",
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual("ok", msg)
+        self.assertEqual("🇯🇵 日本W03 | IEPL", token_dict["sub2api_proxy_name"])
+        self.assertEqual("🇯🇵 日本W03 | IEPL", client.payload["sub2api_proxy_name"])
 
     def test_deferred_confirmation_persists_reuse_state_for_next_selection(self):
         fake_db = {}
