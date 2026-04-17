@@ -147,7 +147,7 @@ createApp({
         }
         window.addEventListener('hashchange', () => {
             const tab = window.location.hash.replace('#', '');
-            if (tab && this.tabs.some(t => t.id === tab)) {
+            if (tab && tab !== this.currentTab && this.tabs.some(t => t.id === tab)) {
                 this.switchTab(tab);
             }
         });
@@ -271,8 +271,27 @@ createApp({
             if (this.config && this.config.reg_mode === 'extension') {
                 this.listenToExtension();
             }
-            if (this.currentTab === 'proxy') {
-                this.fetchClashPool();
+            await this.loadCurrentTabData(this.currentTab, { initialLoad: true });
+        },
+        async loadCurrentTabData(tabId, options = {}) {
+            const { initialLoad = false, isManual = false } = options;
+
+            if (tabId === 'accounts') {
+                if (!initialLoad) return this.fetchAccounts(isManual);
+                return;
+            }
+            if (tabId === 'email') {
+                if (!initialLoad) return this.fetchConfig();
+                return;
+            }
+            if (tabId === 'cloud') {
+                return this.fetchCloudAccounts();
+            }
+            if (tabId === 'mailboxes') {
+                return this.fetchMailboxes(isManual);
+            }
+            if (tabId === 'proxy') {
+                return this.fetchClashPool();
             }
         },
         startStatsPolling() {
@@ -461,26 +480,12 @@ createApp({
 			if (tabId === 'console') {
 				this.pollStats(); 
 			}
-            if (tabId === 'accounts') {
-                this.fetchAccounts();
-            }
-			if (tabId === 'email') {
-				this.fetchConfig();
-			}
-			if (tabId === 'cloud') {
-			    this.fetchCloudAccounts();
-			}
             if (tabId === 'cluster') {
                 this.initClusterWebSocket();
             } else {
                 if (this.clusterWs) this.clusterWs.close();
             }
-            if (tabId === 'mailboxes') {
-                this.fetchMailboxes();
-            }
-            if (tabId === 'proxy') {
-                this.fetchClashPool();
-            }
+            this.loadCurrentTabData(tabId);
         },
         async exportSelectedAccounts() {
             if (this.selectedAccounts.length === 0) {
@@ -1808,9 +1813,12 @@ createApp({
                     this.totalMailboxes = data.total || this.mailboxes.length;
                     this.selectedMailboxes = [];
                     if (isManual) this.showToast("邮箱库已刷新！", "success");
+                } else {
+                    this.showToast(data.message || "邮箱库读取失败，请稍后重试", "error");
                 }
             } catch (e) {
                 console.error("获取邮箱库失败:", e);
+                this.showToast("邮箱库读取失败，请稍后重试", "error");
             }
         },
         changeMailboxPage(newPage) {

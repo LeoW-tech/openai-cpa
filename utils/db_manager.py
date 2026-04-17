@@ -4,8 +4,10 @@ import os
 from datetime import datetime
 from typing import Any
 
-os.makedirs("data", exist_ok=True)
-DB_PATH = "data/data.db"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, "data.db")
 
 def ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
@@ -230,7 +232,8 @@ def get_local_mailboxes_page(page: int = 1, page_size: int = 50) -> dict:
             rows = c.fetchall()
             return {"total": total, "data": [dict(r) for r in rows]}
     except Exception as e:
-        return {"total": 0, "data": []}
+        print(f"[{ts()}] [ERROR] 分页获取邮箱库失败: {e}")
+        raise RuntimeError("邮箱库查询失败") from e
 
 def delete_local_mailboxes(ids: list) -> bool:
     if not ids: return True

@@ -1056,8 +1056,12 @@ def ext_stop(token: str = Depends(verify_token)):
 
 @router.get("/api/mailboxes")
 async def get_mailboxes(page: int = Query(1), page_size: int = Query(50), token: str = Depends(verify_token)):
-    result = db_manager.get_local_mailboxes_page(page, page_size)
-    return {"status": "success", "data": result["data"], "total": result["total"], "page": page, "page_size": page_size}
+    try:
+        result = db_manager.get_local_mailboxes_page(page, page_size)
+        return {"status": "success", "data": result["data"], "total": result["total"], "page": page, "page_size": page_size}
+    except Exception as e:
+        print(f"[{core_engine.ts()}] [ERROR] 邮箱库读取失败: {e}")
+        return {"status": "error", "message": "邮箱库读取失败，请稍后重试"}
 
 
 @router.post("/api/mailboxes/import")
