@@ -20,7 +20,9 @@ CLASH_SECRET = ""
 NODE_BLACKLIST = []
 _IS_IN_DOCKER = os.path.exists('/.dockerenv')
 _global_switch_lock = threading.Lock()
+_node_cache_lock = threading.Lock()
 _last_switch_time = 0
+_last_success_nodes = {}
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(CURRENT_DIR)
 
@@ -100,6 +102,23 @@ def get_api_url_for_proxy(proxy_url: str) -> str:
     except Exception:
         pass
     return CLASH_API_URL
+
+def _node_cache_key(proxy_url: str = None) -> str:
+    raw_url = proxy_url if proxy_url else LOCAL_PROXY_URL
+    return format_docker_url(raw_url or "")
+
+def _record_success_node(proxy_url: str = None, node_name: str = "") -> None:
+    clean_name = str(node_name or "").strip()
+    if not clean_name:
+        return
+    key = _node_cache_key(proxy_url)
+    with _node_cache_lock:
+        _last_success_nodes[key] = clean_name
+
+def get_last_success_node_name(proxy_url: str = None):
+    key = _node_cache_key(proxy_url)
+    with _node_cache_lock:
+        return _last_success_nodes.get(key)
 
 def test_proxy_liveness(proxy_url=None):
     """测试当前代理是否可用 (脱敏)"""
@@ -236,6 +255,7 @@ def _do_smart_switch(proxy_url=None):
                         if switch_resp.status_code == 204:
                             time.sleep(1)
                             if test_proxy_liveness(proxy_url):
+                                _record_success_node(proxy_url, best_node)
                                 return True
                             print(f"[{ts()}] [代理池] {display_name} 最快节点测活失败，回退到随机抽卡模式...")
                     else:
@@ -257,6 +277,7 @@ def _do_smart_switch(proxy_url=None):
             if switch_resp.status_code == 204:
                 time.sleep(1.5)
                 if test_proxy_liveness(proxy_url):
+                    _record_success_node(proxy_url, selected_node)
                     return True
                 print(f"[{ts()}] [代理池] {display_name} 测活失败，重新抽卡...")
             else:

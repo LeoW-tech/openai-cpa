@@ -114,6 +114,7 @@ class Sub2APIClient:
         url = f"{self.api_url}/api/v1/admin/accounts/data"
         exported_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         extra = self._build_account_extra(settings)
+        proxy_name = str(token_data.get("sub2api_proxy_name", "") or "").strip()
 
         account_item = {
             "name": token_data.get("email", "unknown"),
@@ -139,6 +140,8 @@ class Sub2APIClient:
             "rate_multiplier": settings["rate_multiplier"],
             "auto_pause_on_expired": True,
         }
+        if proxy_name:
+            account_item["proxy_name"] = proxy_name
         if settings["group_ids"]:
             account_item["group_ids"] = settings["group_ids"]
 
@@ -219,8 +222,9 @@ class Sub2APIClient:
     def add_account(self, token_data: Dict[str, Any]) -> Tuple[bool, str]:
         settings = self._get_push_settings()
         refresh_token = token_data.get("refresh_token", "")
+        proxy_name = str(token_data.get("sub2api_proxy_name", "") or "").strip()
 
-        if not refresh_token:
+        if proxy_name or not refresh_token:
             return self._import_account(token_data, settings)
 
         url = f"{self.api_url}/api/v1/admin/accounts"

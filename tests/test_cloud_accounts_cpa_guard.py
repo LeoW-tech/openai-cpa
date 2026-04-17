@@ -2,75 +2,68 @@ import importlib
 import sys
 import types
 import unittest
+import builtins
+from contextlib import ExitStack
 from unittest.mock import patch
 
 
-fake_requests_module = types.SimpleNamespace(
-    get=None,
-    post=None,
-    patch=None,
-    delete=None,
-    put=None,
-    Session=object,
-)
-
-sys.modules.setdefault(
-    "curl_cffi",
-    types.SimpleNamespace(requests=fake_requests_module, CurlMime=object),
-)
-sys.modules.setdefault(
-    "utils.email_providers.mail_service",
-    types.SimpleNamespace(
-        clear_sticky_domain=lambda: None,
-        mask_email=lambda value, force_mask=False: value,
-        get_last_email=lambda: "demo@example.com",
-    ),
-)
-sys.modules.setdefault(
-    "utils.register",
-    types.SimpleNamespace(
-        run=lambda *args, **kwargs: (None, None),
-        refresh_oauth_token=lambda *args, **kwargs: (False, {}),
-    ),
-)
-sys.modules.setdefault(
-    "utils.proxy_manager",
-    types.SimpleNamespace(
-        smart_switch_node=lambda *args, **kwargs: True,
-        reload_proxy_config=lambda *args, **kwargs: None,
-    ),
-)
-sys.modules.setdefault(
-    "utils.integrations.sub2api_client",
-    types.SimpleNamespace(Sub2APIClient=object),
-)
-sys.modules.setdefault(
-    "utils.integrations.tg_notifier",
-    types.SimpleNamespace(
-        send_tg_msg_sync=lambda *args, **kwargs: None,
-        send_tg_msg_async=lambda *args, **kwargs: None,
-    ),
-)
-sys.modules.setdefault(
-    "utils.email_providers.gmail_oauth_handler",
-    types.SimpleNamespace(GmailOAuthHandler=object),
-)
-sys.modules.setdefault("cloudflare", types.SimpleNamespace(Cloudflare=object))
-sys.modules.setdefault(
-    "utils.integrations.clash_manager",
-    types.SimpleNamespace(
-        list_instances=lambda *args, **kwargs: [],
-        create_pool=lambda *args, **kwargs: {"status": "success"},
-        delete_pool=lambda *args, **kwargs: {"status": "success"},
-        get_container_ip=lambda *args, **kwargs: None,
-        get_controller_base=lambda *args, **kwargs: None,
-        sync_subscription=lambda *args, **kwargs: {"status": "success"},
-        refresh_instance=lambda *args, **kwargs: {"status": "success"},
-    ),
-)
-
-
 class CloudAccountsCpaGuardTests(unittest.TestCase):
+    def setUp(self):
+        fake_requests_module = types.SimpleNamespace(
+            get=None,
+            post=None,
+            patch=None,
+            delete=None,
+            put=None,
+            Session=object,
+        )
+        self._module_stack = ExitStack()
+        self._module_stack.enter_context(
+            patch.dict(
+                sys.modules,
+                {
+                    "curl_cffi": types.SimpleNamespace(requests=fake_requests_module, CurlMime=object),
+                    "utils.email_providers.mail_service": types.SimpleNamespace(
+                        clear_sticky_domain=lambda: None,
+                        mask_email=lambda value, force_mask=False: value,
+                        get_last_email=lambda: "demo@example.com",
+                    ),
+                    "utils.register": types.SimpleNamespace(
+                        run=lambda *args, **kwargs: (None, None),
+                        refresh_oauth_token=lambda *args, **kwargs: (False, {}),
+                    ),
+                    "utils.proxy_manager": types.SimpleNamespace(
+                        smart_switch_node=lambda *args, **kwargs: True,
+                        reload_proxy_config=lambda *args, **kwargs: None,
+                        get_last_success_node_name=lambda *args, **kwargs: None,
+                    ),
+                    "utils.integrations.sub2api_client": types.SimpleNamespace(Sub2APIClient=object),
+                    "utils.integrations.tg_notifier": types.SimpleNamespace(
+                        send_tg_msg_sync=lambda *args, **kwargs: None,
+                        send_tg_msg_async=lambda *args, **kwargs: None,
+                    ),
+                    "utils.email_providers.gmail_oauth_handler": types.SimpleNamespace(GmailOAuthHandler=object),
+                    "cloudflare": types.SimpleNamespace(Cloudflare=object),
+                    "utils.integrations.clash_manager": types.SimpleNamespace(
+                        list_instances=lambda *args, **kwargs: [],
+                        create_pool=lambda *args, **kwargs: {"status": "success"},
+                        delete_pool=lambda *args, **kwargs: {"status": "success"},
+                        get_container_ip=lambda *args, **kwargs: None,
+                        get_controller_base=lambda *args, **kwargs: None,
+                        sync_subscription=lambda *args, **kwargs: {"status": "success"},
+                        refresh_instance=lambda *args, **kwargs: {"status": "success"},
+                    ),
+                },
+            )
+        )
+        sys.modules.pop("routers.api_routes", None)
+
+    def tearDown(self):
+        sys.modules.pop("routers.api_routes", None)
+        if hasattr(builtins, "_openai_cpa_real_print"):
+            builtins.print = builtins._openai_cpa_real_print
+        self._module_stack.close()
+
     def _reload_api_routes(self):
         import routers.api_routes as api_routes
 

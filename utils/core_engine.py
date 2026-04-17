@@ -30,7 +30,7 @@ from utils import db_manager
 from utils.config import reload_all_configs, ts, format_docker_url
 from utils.email_providers.mail_service import mask_email
 from utils.register import run, refresh_oauth_token as _refresh_oauth_token
-from utils.proxy_manager import smart_switch_node
+from utils.proxy_manager import get_last_success_node_name, smart_switch_node
 from utils.integrations.sub2api_client import Sub2APIClient
 from utils.integrations.tg_notifier import send_tg_msg_sync
 from utils.integrations import hero_sms
@@ -539,8 +539,9 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
             
     else:
         with _stats_lock: run_stats["success"] += 1
-        token_data    = json.loads(token_json_str)
+        token_data    = _apply_sub2api_proxy_name(json.loads(token_json_str), run_ctx)
         account_email = token_data.get("email", "unknown")
+        token_json_str = json.dumps(token_data, ensure_ascii=False, separators=(",", ":"))
 
         # 存入本地数据库
         if (cpa_upload and cfg.SAVE_TO_LOCAL_IN_CPA_MODE) or not cpa_upload:
@@ -593,6 +594,30 @@ def confirm_sub2api_hero_sms_usage(status: str, run_ctx: dict, sub2api_ok: bool)
         return False
     return bool(hero_sms.confirm_pending_hero_sms_usage(run_ctx))
 
+def _apply_sub2api_proxy_name(token_data: dict, run_ctx: dict = None, proxy_url: str = None) -> dict:
+    if not isinstance(token_data, dict):
+        return token_data
+
+    proxy_name = ""
+    if isinstance(run_ctx, dict):
+        proxy_name = str(run_ctx.get("sub2api_proxy_name") or "").strip()
+    if not proxy_name:
+        proxy_name = str(get_last_success_node_name(proxy_url) or "").strip()
+
+    updated = dict(token_data)
+    if proxy_name:
+        updated["sub2api_proxy_name"] = proxy_name
+        if isinstance(run_ctx, dict):
+            run_ctx["sub2api_proxy_name"] = proxy_name
+    return updated
+
+def _sync_run_ctx_proxy_name(run_ctx: dict = None, proxy_url: str = None) -> None:
+    if not isinstance(run_ctx, dict):
+        return
+    proxy_name = str(get_last_success_node_name(proxy_url) or "").strip()
+    if proxy_name:
+        run_ctx["sub2api_proxy_name"] = proxy_name
+
 def run_and_refresh(proxy, args, cpa_upload=False, skip_switch=False):
     proxy = format_docker_url(proxy)
     """切节点 → 注册 → 处理结果。"""
@@ -602,6 +627,7 @@ def run_and_refresh(proxy, args, cpa_upload=False, skip_switch=False):
     
     result = None
     run_ctx = {}
+    _sync_run_ctx_proxy_name(run_ctx, proxy)
     try:
         result = run(proxy, run_ctx=run_ctx)
     except Exception as e:
@@ -1170,11 +1196,12 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event):
                         if not smart_switch_node(p):
                             print(f"[{ts()}] [WARNING] [Sub2API补货] 全局节点切换失败...")
                     run_ctx = {"hero_sms_counting_mode": "deferred_sub2api"}
+                    _sync_run_ctx_proxy_name(run_ctx, p)
                     result = run(p, run_ctx=run_ctx)
                     status = handle_registration_result(result, cpa_upload=False, run_ctx=run_ctx)
 
                     if status == "success":
-                        token_dict = json.loads(result[0])
+                        token_dict = _apply_sub2api_proxy_name(json.loads(result[0]), run_ctx, p)
                         if hasattr(client, "add_account"):
                             ok, msg = client.add_account(token_dict)
                             if ok: print(f"[{ts()}] [SUCCESS] Sub2API 补货入库成功")

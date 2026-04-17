@@ -4,53 +4,58 @@ import sys
 import time
 import types
 import unittest
+import builtins
+from contextlib import ExitStack
 from unittest.mock import patch
-
-fake_requests_module = types.SimpleNamespace(
-    get=None,
-    post=None,
-    patch=None,
-    delete=None,
-    put=None,
-    Session=object,
-)
-sys.modules.setdefault(
-    "curl_cffi",
-    types.SimpleNamespace(requests=fake_requests_module, CurlMime=object),
-)
-sys.modules.setdefault(
-    "utils.email_providers.mail_service",
-    types.SimpleNamespace(
-        clear_sticky_domain=lambda: None,
-        mask_email=lambda value, force_mask=False: value,
-        get_last_email=lambda: "demo@example.com",
-    ),
-)
-sys.modules.setdefault(
-    "utils.register",
-    types.SimpleNamespace(
-        run=lambda *args, **kwargs: (None, None),
-        refresh_oauth_token=lambda *args, **kwargs: (False, {}),
-    ),
-)
-sys.modules.setdefault(
-    "utils.proxy_manager",
-    types.SimpleNamespace(
-        smart_switch_node=lambda *args, **kwargs: True,
-        reload_proxy_config=lambda *args, **kwargs: None,
-    ),
-)
-sys.modules.setdefault(
-    "utils.integrations.sub2api_client",
-    types.SimpleNamespace(Sub2APIClient=object),
-)
-sys.modules.setdefault(
-    "utils.integrations.tg_notifier",
-    types.SimpleNamespace(send_tg_msg_sync=lambda *args, **kwargs: None),
-)
 
 
 class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
+    def setUp(self):
+        fake_requests_module = types.SimpleNamespace(
+            get=None,
+            post=None,
+            patch=None,
+            delete=None,
+            put=None,
+            Session=object,
+        )
+        self._module_stack = ExitStack()
+        self._module_stack.enter_context(
+            patch.dict(
+                sys.modules,
+                {
+                    "curl_cffi": types.SimpleNamespace(requests=fake_requests_module, CurlMime=object),
+                    "utils.email_providers.mail_service": types.SimpleNamespace(
+                        clear_sticky_domain=lambda: None,
+                        mask_email=lambda value, force_mask=False: value,
+                        get_last_email=lambda: "demo@example.com",
+                    ),
+                    "utils.register": types.SimpleNamespace(
+                        run=lambda *args, **kwargs: (None, None),
+                        refresh_oauth_token=lambda *args, **kwargs: (False, {}),
+                    ),
+                    "utils.proxy_manager": types.SimpleNamespace(
+                        smart_switch_node=lambda *args, **kwargs: True,
+                        reload_proxy_config=lambda *args, **kwargs: None,
+                        get_last_success_node_name=lambda *args, **kwargs: None,
+                    ),
+                    "utils.integrations.sub2api_client": types.SimpleNamespace(Sub2APIClient=object),
+                    "utils.integrations.tg_notifier": types.SimpleNamespace(
+                        send_tg_msg_sync=lambda *args, **kwargs: None
+                    ),
+                },
+            )
+        )
+        sys.modules.pop("utils.core_engine", None)
+        sys.modules.pop("utils.integrations.hero_sms", None)
+
+    def tearDown(self):
+        sys.modules.pop("utils.core_engine", None)
+        sys.modules.pop("utils.integrations.hero_sms", None)
+        if hasattr(builtins, "_openai_cpa_real_print"):
+            builtins.print = builtins._openai_cpa_real_print
+        self._module_stack.close()
+
     def _reload_core_engine(self):
         import utils.core_engine as core_engine
 
@@ -88,6 +93,20 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
 
         self.assertEqual("success", status)
         self.assertIs(False, run_ctx["local_account_saved"])
+
+    def test_handle_registration_result_persists_sub2api_proxy_name_into_token_data(self):
+        core_engine = self._reload_core_engine()
+        result = (json.dumps({"email": "demo@example.com"}), "Password123!")
+
+        with patch.object(core_engine.db_manager, "save_account_to_db", return_value=True) as save_account:
+            with patch.object(core_engine, "send_tg_msg_sync"):
+                with patch.object(core_engine.mail_service, "get_last_email", return_value="demo@example.com"):
+                    run_ctx = {"sub2api_proxy_name": "🇯🇵 日本W03 | IEPL"}
+                    status = core_engine.handle_registration_result(result, cpa_upload=False, run_ctx=run_ctx)
+
+        self.assertEqual("success", status)
+        saved_token_data = json.loads(save_account.call_args.args[2])
+        self.assertEqual("🇯🇵 日本W03 | IEPL", saved_token_data["sub2api_proxy_name"])
 
     def test_reload_core_engine_does_not_stack_print_wrapper(self):
         first = self._reload_core_engine()

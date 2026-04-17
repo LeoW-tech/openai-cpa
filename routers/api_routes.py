@@ -539,7 +539,7 @@ async def export_sub2api_accounts(req: ExportReq, token: str = Depends(verify_to
         sub2api_settings = getattr(core_engine.cfg, '_c', {}).get("sub2api_mode", {})
         accounts_list = []
         for td in tokens:
-            accounts_list.append({
+            account_item = {
                 "name": str(td.get("email", "unknown"))[:64],
                 "platform": "openai", "type": "oauth",
                 "credentials": {"refresh_token": td.get("refresh_token", "")},
@@ -547,7 +547,11 @@ async def export_sub2api_accounts(req: ExportReq, token: str = Depends(verify_to
                 "priority": int(sub2api_settings.get("account_priority", 1)),
                 "rate_multiplier": float(sub2api_settings.get("account_rate_multiplier", 1.0)),
                 "extra": {"load_factor": int(sub2api_settings.get("account_load_factor", 10))}
-            })
+            }
+            proxy_name = str(td.get("sub2api_proxy_name", "") or "").strip()
+            if proxy_name:
+                account_item["proxy_name"] = proxy_name
+            accounts_list.append(account_item)
         return {"status": "success",
                 "data": {"exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "proxies": [],
                          "accounts": accounts_list}}
