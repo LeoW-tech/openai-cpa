@@ -42,12 +42,7 @@ except ImportError:
     try:
         hero_sms = importlib.import_module("utils.integrations.hero_sms")
     except Exception:
-        class _FallbackHeroSms:
-            @staticmethod
-            def confirm_pending_hero_sms_usage(run_ctx):
-                return False
-
-        hero_sms = _FallbackHeroSms()
+        hero_sms = None
 
 
 _stats_lock = threading.Lock()
@@ -668,20 +663,6 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
     return ret_status
 
 
-def confirm_effective_hero_sms_usage(status: str, run_ctx: dict) -> bool:
-    if status != "success":
-        return False
-    if not isinstance(run_ctx, dict):
-        return False
-    if not bool(run_ctx.get("local_account_saved")):
-        return False
-    return bool(hero_sms.confirm_pending_hero_sms_usage(run_ctx))
-
-
-def confirm_sub2api_hero_sms_usage(status: str, run_ctx: dict, sub2api_ok: bool) -> bool:
-    return confirm_effective_hero_sms_usage(status, run_ctx)
-
-
 def _apply_sub2api_proxy_name(token_data: dict, run_ctx: dict = None, proxy_url: str = None) -> dict:
     if not isinstance(token_data, dict):
         return token_data
@@ -724,7 +705,7 @@ def run_and_refresh(proxy, args, cpa_upload=False, skip_switch=False):
             print(f"[{ts()}] [WARNING] {proxy} 节点切换失败，将使用当前 IP 继续尝试...")
     
     result = None
-    run_ctx = {"hero_sms_counting_mode": "deferred_local_save"}
+    run_ctx = {}
     _sync_run_ctx_proxy_name(run_ctx, proxy)
     run_ctx["analytics_started_monotonic"] = time.time()
     run_ctx["analytics_metrics"] = {}
@@ -748,9 +729,7 @@ def run_and_refresh(proxy, args, cpa_upload=False, skip_switch=False):
         run_ctx["failure_stage"] = run_ctx.get("failure_stage") or "run_exception"
         run_ctx["failure_message"] = str(e)
 
-    status = handle_registration_result(result, cpa_upload=cpa_upload, run_ctx=run_ctx)
-    confirm_effective_hero_sms_usage(status, run_ctx)
-    return status
+    return handle_registration_result(result, cpa_upload=cpa_upload, run_ctx=run_ctx)
 
 # def auto_heal_subdomain(failed_domain: str):
     # print(f"[{ts()}] [自愈] 域名 {failed_domain} 达到失败阈值，触发更替程序...")
@@ -1312,7 +1291,7 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event):
                     if not skip_switch:
                         if not smart_switch_node(p):
                             print(f"[{ts()}] [WARNING] [Sub2API补货] 全局节点切换失败...")
-                    run_ctx = {"hero_sms_counting_mode": "deferred_sub2api"}
+                    run_ctx = {}
                     _sync_run_ctx_proxy_name(run_ctx, p)
                     result = run(p, run_ctx=run_ctx)
                     status = handle_registration_result(result, cpa_upload=False, run_ctx=run_ctx)
@@ -1322,7 +1301,6 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event):
                             ok, msg, _ = add_result_account_to_sub2api(client, result, run_ctx=run_ctx, proxy_url=p)
                             if ok: print(f"[{ts()}] [SUCCESS] Sub2API 补货入库成功")
                             else: print(f"[{ts()}] [ERROR] Sub2API 补货入库失败: {msg}")
-                        confirm_effective_hero_sms_usage(status, run_ctx)
                     return status
 
                 def _sub2api_worker():

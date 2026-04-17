@@ -1,7 +1,6 @@
 import importlib
 import json
 import sys
-import time
 import types
 import unittest
 import builtins
@@ -61,13 +60,6 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
 
         return importlib.reload(core_engine)
 
-    def _reload_hero_sms(self, saved_state=None):
-        import utils.integrations.hero_sms as hero_sms
-
-        with patch.object(hero_sms.db_manager, "get_sys_kv", return_value=saved_state):
-            with patch.object(hero_sms.db_manager, "set_sys_kv"):
-                return importlib.reload(hero_sms)
-
     def test_handle_registration_result_records_local_save_status(self):
         core_engine = self._reload_core_engine()
         result = (json.dumps({"email": "demo@example.com"}), "Password123!")
@@ -115,45 +107,23 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
         self.assertIs(first._orig_print, second._orig_print)
         self.assertIs(sys.modules["builtins"].print, second.web_print)
 
-    def test_sub2api_usage_confirmation_only_runs_after_full_business_success(self):
+    def test_core_engine_no_longer_exposes_deferred_hero_sms_confirmation_helpers(self):
+        core_engine = self._reload_core_engine()
+        self.assertFalse(hasattr(core_engine, "confirm_effective_hero_sms_usage"))
+        self.assertFalse(hasattr(core_engine, "confirm_sub2api_hero_sms_usage"))
+
+    def test_run_and_refresh_does_not_seed_deferred_hero_sms_counting_mode(self):
         core_engine = self._reload_core_engine()
 
-        scenarios = [
-            ("failed", True, True, False),
-            ("success", False, True, False),
-            ("success", True, False, True),
-            ("success", True, True, True),
-        ]
+        with patch.object(core_engine, "smart_switch_node", return_value=True):
+            with patch.object(core_engine.registration_history, "start_attempt", return_value=1):
+                with patch.object(core_engine, "run", return_value=("{}", "Password123!")) as run_mock:
+                    with patch.object(core_engine, "handle_registration_result", return_value="success"):
+                        status = core_engine.run_and_refresh("http://127.0.0.1:7890", args=object(), cpa_upload=False)
 
-        for status, local_saved, sub2api_ok, should_confirm in scenarios:
-            with self.subTest(status=status, local_saved=local_saved, sub2api_ok=sub2api_ok):
-                run_ctx = {"local_account_saved": local_saved, "hero_sms_pending_usage": {"activation_id": "reuse-1"}}
-                with patch.object(core_engine.hero_sms, "confirm_pending_hero_sms_usage") as confirm_usage:
-                    core_engine.confirm_sub2api_hero_sms_usage(
-                        status=status,
-                        run_ctx=run_ctx,
-                        sub2api_ok=sub2api_ok,
-                    )
-
-                    if should_confirm:
-                        confirm_usage.assert_called_once_with(run_ctx)
-                    else:
-                        confirm_usage.assert_not_called()
-
-    def test_confirm_effective_usage_only_depends_on_local_save_gate(self):
-        core_engine = self._reload_core_engine()
-        run_ctx = {"local_account_saved": True, "hero_sms_pending_usage": {"activation_id": "reuse-1"}}
-
-        with patch.object(core_engine.hero_sms, "confirm_pending_hero_sms_usage", return_value=True) as confirm_usage:
-            self.assertTrue(core_engine.confirm_effective_hero_sms_usage("success", run_ctx))
-
-        confirm_usage.assert_called_once_with(run_ctx)
-
-        with patch.object(core_engine.hero_sms, "confirm_pending_hero_sms_usage") as confirm_usage:
-            self.assertFalse(core_engine.confirm_effective_hero_sms_usage("failed", run_ctx))
-            self.assertFalse(core_engine.confirm_effective_hero_sms_usage("success", {"local_account_saved": False}))
-
-        confirm_usage.assert_not_called()
+        self.assertEqual("success", status)
+        run_ctx = run_mock.call_args.kwargs["run_ctx"]
+        self.assertNotIn("hero_sms_counting_mode", run_ctx)
 
     def test_add_result_account_to_sub2api_applies_proxy_name_before_remote_push(self):
         core_engine = self._reload_core_engine()
@@ -180,46 +150,6 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
         self.assertEqual("ok", msg)
         self.assertEqual("🇯🇵 日本W03 | IEPL", token_dict["sub2api_proxy_name"])
         self.assertEqual("🇯🇵 日本W03 | IEPL", client.payload["sub2api_proxy_name"])
-
-    def test_deferred_confirmation_persists_reuse_state_for_next_selection(self):
-        fake_db = {}
-        hero_sms = self._reload_hero_sms(saved_state=None)
-        base_ts = time.time()
-
-        def fake_set_sys_kv(key, value):
-            fake_db[key] = json.loads(json.dumps(value))
-
-        def fake_get_sys_kv(key, default=None):
-            return fake_db.get(key, default)
-
-        with patch.object(hero_sms.db_manager, "set_sys_kv", side_effect=fake_set_sys_kv):
-            with patch.object(hero_sms.db_manager, "get_sys_kv", side_effect=fake_get_sys_kv):
-                with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX_USES", 3, create=True):
-                    with patch.object(hero_sms.time, "time", return_value=base_ts):
-                        hero_sms._hero_sms_reuse_clear()
-                        hero_sms._hero_sms_reuse_set("reuse-1", "+66964536019", "dr", 52)
-
-                    run_ctx = {}
-                    hero_sms._hero_sms_record_pending_usage(
-                        run_ctx,
-                        activation_id="reuse-1",
-                        phone="+66964536019",
-                        service="dr",
-                        country=52,
-                    )
-
-                    with patch.object(hero_sms.time, "time", return_value=base_ts + 5):
-                        self.assertTrue(hero_sms.confirm_pending_hero_sms_usage(run_ctx))
-
-                    with hero_sms._HERO_SMS_REUSE_LOCK:
-                        hero_sms._HERO_SMS_REUSE_STATE["entries"] = []
-                        hero_sms._HERO_SMS_REUSE_STATE["updated_at"] = 0.0
-
-                    with patch.object(hero_sms.time, "time", return_value=base_ts + 10):
-                        self.assertEqual(
-                            ("reuse-1", "+66964536019", 1),
-                            hero_sms._hero_sms_reuse_get("dr", 52),
-                        )
 
 
 if __name__ == "__main__":

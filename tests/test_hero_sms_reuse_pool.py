@@ -39,22 +39,24 @@ class HeroSmsReusePoolTests(unittest.TestCase):
     def test_reuse_entry_remains_available_until_confirmed_uses_reaches_limit(self):
         hero_sms = self._reload_hero_sms(saved_state=None)
 
-        with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX_USES", 3, create=True):
-            with patch.object(hero_sms.db_manager, "set_sys_kv"):
-                hero_sms._hero_sms_reuse_clear()
-                hero_sms._hero_sms_reuse_set("reuse-1", "+6699990000", "dr", 52)
+        with patch.object(hero_sms.db_manager, "set_sys_kv"):
+            hero_sms._hero_sms_reuse_clear()
+            hero_sms._hero_sms_reuse_set("reuse-1", "+6699990000", "dr", 52)
 
-                with patch.object(hero_sms.db_manager, "get_sys_kv", return_value=hero_sms.get_hero_sms_reuse_pool_snapshot()):
-                    self.assertEqual(("reuse-1", "+6699990000", 0), hero_sms._hero_sms_reuse_get("dr", 52))
+            with patch.object(hero_sms.db_manager, "get_sys_kv", return_value=hero_sms.get_hero_sms_reuse_pool_snapshot()):
+                self.assertEqual(("reuse-1", "+6699990000", 0), hero_sms._hero_sms_reuse_get("dr", 52))
 
-                hero_sms._hero_sms_confirm_reuse_usage("reuse-1")
-                hero_sms._hero_sms_confirm_reuse_usage("reuse-1")
-                with patch.object(hero_sms.db_manager, "get_sys_kv", return_value=hero_sms.get_hero_sms_reuse_pool_snapshot()):
-                    self.assertEqual(("reuse-1", "+6699990000", 2), hero_sms._hero_sms_reuse_get("dr", 52))
+            hero_sms._hero_sms_confirm_reuse_usage("reuse-1")
+            with patch.object(hero_sms.db_manager, "get_sys_kv", return_value=hero_sms.get_hero_sms_reuse_pool_snapshot()):
+                self.assertEqual(("reuse-1", "+6699990000", 1), hero_sms._hero_sms_reuse_get("dr", 52))
 
-                hero_sms._hero_sms_confirm_reuse_usage("reuse-1")
-                with patch.object(hero_sms.db_manager, "get_sys_kv", return_value=hero_sms.get_hero_sms_reuse_pool_snapshot()):
-                    self.assertEqual(("", "", 0), hero_sms._hero_sms_reuse_get("dr", 52))
+            hero_sms._hero_sms_confirm_reuse_usage("reuse-1")
+            with patch.object(hero_sms.db_manager, "get_sys_kv", return_value=hero_sms.get_hero_sms_reuse_pool_snapshot()):
+                self.assertEqual(("", "", 0), hero_sms._hero_sms_reuse_get("dr", 52))
+
+    def test_reuse_limit_is_hardcoded_to_two(self):
+        hero_sms = self._reload_hero_sms(saved_state=None)
+        self.assertEqual(2, hero_sms._hero_sms_reuse_max_uses())
 
     def test_expired_entry_is_not_reusable(self):
         hero_sms = self._reload_hero_sms(saved_state=None)
@@ -83,7 +85,7 @@ class HeroSmsReusePoolTests(unittest.TestCase):
                     "phone": "+66964536019",
                     "service": "dr",
                     "country": 52,
-                    "confirmed_uses": 2,
+                    "confirmed_uses": 1,
                     "updated_at": base_ts + 30,
                 }
             ],
@@ -94,11 +96,10 @@ class HeroSmsReusePoolTests(unittest.TestCase):
             with patch.object(hero_sms.time, "time", return_value=base_ts):
                 hero_sms._hero_sms_reuse_clear()
 
-            with patch.object(hero_sms.db_manager, "get_sys_kv", return_value=db_state):
-                with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX_USES", 3, create=True):
+                with patch.object(hero_sms.db_manager, "get_sys_kv", return_value=db_state):
                     with patch.object(hero_sms.time, "time", return_value=base_ts + 60):
                         self.assertEqual(
-                            ("reuse-db", "+66964536019", 2),
+                            ("reuse-db", "+66964536019", 1),
                             hero_sms._hero_sms_reuse_get("dr", 52),
                         )
 
@@ -112,7 +113,7 @@ class HeroSmsReusePoolTests(unittest.TestCase):
                     "phone": "+6699990000",
                     "service": "dr",
                     "country": 52,
-                    "confirmed_uses": 3,
+                    "confirmed_uses": 2,
                     "updated_at": base_ts,
                 },
                 {

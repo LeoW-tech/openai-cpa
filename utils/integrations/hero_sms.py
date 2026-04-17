@@ -142,11 +142,7 @@ def _hero_sms_price_cache_ttl_sec() -> int: return 90
 
 def _hero_sms_reuse_ttl_sec() -> int: return 1200
 
-def _hero_sms_reuse_max_uses() -> int:
-    try:
-        return max(1, int(getattr(cfg, "HERO_SMS_REUSE_MAX_USES", 2)))
-    except Exception:
-        return 2
+def _hero_sms_reuse_max_uses() -> int: return 2
 
 def _hero_sms_mark_ready_enabled() -> bool: return True
 
@@ -450,11 +446,6 @@ def _hero_sms_reuse_touch(activation_id: str, increase: bool = False) -> None:
         _HERO_SMS_REUSE_STATE["entries"] = entries
         _HERO_SMS_REUSE_STATE["updated_at"] = now
     _sync_reuse_to_db()
-
-
-def _hero_sms_confirm_reuse_usage(activation_id: str) -> None:
-    _hero_sms_reuse_touch(activation_id, increase=True)
-
 def _hero_sms_reuse_clear() -> None:
     with _HERO_SMS_REUSE_LOCK:
         _HERO_SMS_REUSE_STATE["entries"] = []
@@ -462,39 +453,8 @@ def _hero_sms_reuse_clear() -> None:
     _sync_reuse_to_db()
 
 
-def _hero_sms_is_deferred_counting(run_ctx: Optional[dict[str, Any]]) -> bool:
-    mode = str(run_ctx.get("hero_sms_counting_mode") or "").strip() if isinstance(run_ctx, dict) else ""
-    return mode in {"deferred_sub2api", "deferred_local_save"}
-
-
-def _hero_sms_record_pending_usage(
-        run_ctx: Optional[dict[str, Any]],
-        *,
-        activation_id: str,
-        phone: str,
-        service: str,
-        country: int,
-) -> None:
-    if run_ctx is None:
-        return
-    run_ctx["hero_sms_pending_usage"] = {
-        "activation_id": str(activation_id or "").strip(),
-        "phone": str(phone or "").strip(),
-        "service": str(service or "").strip(),
-        "country": int(country),
-    }
-
-
-def confirm_pending_hero_sms_usage(run_ctx: Optional[dict[str, Any]]) -> bool:
-    pending = run_ctx.get("hero_sms_pending_usage") if isinstance(run_ctx, dict) else None
-    if not isinstance(pending, dict):
-        return False
-    activation_id = str(pending.get("activation_id") or "").strip()
-    if not activation_id:
-        return False
-    _hero_sms_confirm_reuse_usage(activation_id)
-    run_ctx["hero_sms_pending_usage_confirmed"] = True
-    return True
+def _hero_sms_confirm_reuse_usage(activation_id: str) -> None:
+    _hero_sms_reuse_touch(activation_id, increase=True)
 
 def _hero_sms_country_is_on_cooldown(country_id: int) -> bool:
     cid = int(country_id)
@@ -1502,7 +1462,6 @@ def _try_verify_phone_via_hero_sms(
 
         service_code = _hero_sms_resolve_service_code(proxies)
         preferred_country_id = _hero_sms_resolve_country_id(proxies)
-        deferred_counting = _hero_sms_is_deferred_counting(run_ctx)
         _info(
             "HeroSMS 国家策略: "
             f"超时阈值：{_hero_sms_country_timeout_limit()}次, "
@@ -1545,17 +1504,7 @@ def _try_verify_phone_via_hero_sms(
                 if ok_reuse:
                     _hero_sms_country_mark_success(country_id)
                     _hero_sms_country_record_result(country_id, True, "reuse_success")
-                    if deferred_counting:
-                        _hero_sms_reuse_touch(reuse_id, increase=False)
-                        _hero_sms_record_pending_usage(
-                            run_ctx,
-                            activation_id=reuse_id,
-                            phone=reuse_phone,
-                            service=service_code,
-                            country=country_id,
-                        )
-                    else:
-                        _hero_sms_confirm_reuse_usage(reuse_id)
+                    _hero_sms_reuse_touch(reuse_id, increase=True)
                     _history_patch(
                         run_ctx,
                         phone_reuse_used_flag=1,
@@ -1581,12 +1530,12 @@ def _try_verify_phone_via_hero_sms(
                             )
                             country_id = next_country
                         else:
-                            _hero_sms_reuse_touch(reuse_id, increase=(not deferred_counting))
+                            _hero_sms_reuse_touch(reuse_id, increase=True)
                             _hero_sms_set_status(reuse_id, 3, proxies)
                             _warn(f"复用手机号未收到短信，保留号码待下次继续: {last_reason}")
                             return False, "接码超时，已保留复用号码"
                     else:
-                        _hero_sms_reuse_touch(reuse_id, increase=(not deferred_counting))
+                        _hero_sms_reuse_touch(reuse_id, increase=True)
                         _hero_sms_set_status(reuse_id, 3, proxies)
                         _warn(f"复用手机号未收到短信，保留号码待下次继续: {last_reason}")
                         return False, "接码超时，已保留复用号码"
@@ -1628,16 +1577,7 @@ def _try_verify_phone_via_hero_sms(
                 _hero_sms_country_record_result(country_id, True, "new_success")
                 if reuse_on:
                     _hero_sms_reuse_set(activation_id, phone_number, service_code, country_id)
-                    if deferred_counting:
-                        _hero_sms_record_pending_usage(
-                            run_ctx,
-                            activation_id=activation_id,
-                            phone=phone_number,
-                            service=service_code,
-                            country=country_id,
-                        )
-                    else:
-                        _hero_sms_confirm_reuse_usage(activation_id)
+                    _hero_sms_reuse_touch(activation_id, increase=True)
                 _history_patch(
                     run_ctx,
                     phone_reuse_used_flag=1 if reuse_on else 0,
@@ -1664,7 +1604,7 @@ def _try_verify_phone_via_hero_sms(
                         country_id = next_country
                         continue
                 _hero_sms_reuse_set(activation_id, phone_number, service_code, country_id)
-                _hero_sms_reuse_touch(activation_id, increase=(not deferred_counting))
+                _hero_sms_reuse_touch(activation_id, increase=True)
                 _hero_sms_set_status(activation_id, 3, proxies)
                 _warn("新购号码接码超时，已保留号码供后续复用，停止继续购号")
                 return False, "接码超时，已保留复用号码"

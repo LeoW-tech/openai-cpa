@@ -512,6 +512,8 @@ async def get_config(token: str = Depends(verify_token)):
 
     if isinstance(config_data.get("sub2api_mode"), dict):
         config_data["sub2api_mode"].pop("min_remaining_weekly_percent", None)
+    if isinstance(config_data.get("hero_sms"), dict):
+        config_data["hero_sms"].pop("reuse_max_uses", None)
     config_data["web_password"] = config_data.get("web_password", "admin")
     if "local_microsoft" not in config_data:
         config_data["local_microsoft"] = {
@@ -528,6 +530,8 @@ async def save_config(new_config: dict, token: str = Depends(verify_token)):
     try:
         if isinstance(new_config.get("sub2api_mode"), dict):
             new_config["sub2api_mode"].pop("min_remaining_weekly_percent", None)
+        if isinstance(new_config.get("hero_sms"), dict):
+            new_config["hero_sms"].pop("reuse_max_uses", None)
         reload_all_configs(new_config_dict=new_config)
 
         return {"status": "success", "message": "✅ 配置已成功保存并同步至云端！"}

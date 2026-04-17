@@ -248,7 +248,6 @@ hero_sms:
   min_balance: 1
   max_tries: 3
   poll_timeout_sec: 120
-  reuse_max_uses: 2
 
 # 常规量产模式专属配置
 normal_mode:
