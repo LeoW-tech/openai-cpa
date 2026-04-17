@@ -1,6 +1,7 @@
 import importlib
 import json
 import sys
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -55,6 +56,13 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
 
         return importlib.reload(core_engine)
 
+    def _reload_hero_sms(self, saved_state=None):
+        import utils.integrations.hero_sms as hero_sms
+
+        with patch.object(hero_sms.db_manager, "get_sys_kv", return_value=saved_state):
+            with patch.object(hero_sms.db_manager, "set_sys_kv"):
+                return importlib.reload(hero_sms)
+
     def test_handle_registration_result_records_local_save_status(self):
         core_engine = self._reload_core_engine()
         result = (json.dumps({"email": "demo@example.com"}), "Password123!")
@@ -105,6 +113,46 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
                         confirm_usage.assert_called_once_with(run_ctx)
                     else:
                         confirm_usage.assert_not_called()
+
+    def test_deferred_confirmation_persists_reuse_state_for_next_selection(self):
+        fake_db = {}
+        hero_sms = self._reload_hero_sms(saved_state=None)
+        base_ts = time.time()
+
+        def fake_set_sys_kv(key, value):
+            fake_db[key] = json.loads(json.dumps(value))
+
+        def fake_get_sys_kv(key, default=None):
+            return fake_db.get(key, default)
+
+        with patch.object(hero_sms.db_manager, "set_sys_kv", side_effect=fake_set_sys_kv):
+            with patch.object(hero_sms.db_manager, "get_sys_kv", side_effect=fake_get_sys_kv):
+                with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX_USES", 3, create=True):
+                    with patch.object(hero_sms.time, "time", return_value=base_ts):
+                        hero_sms._hero_sms_reuse_clear()
+                        hero_sms._hero_sms_reuse_set("reuse-1", "+66964536019", "dr", 52)
+
+                    run_ctx = {}
+                    hero_sms._hero_sms_record_pending_usage(
+                        run_ctx,
+                        activation_id="reuse-1",
+                        phone="+66964536019",
+                        service="dr",
+                        country=52,
+                    )
+
+                    with patch.object(hero_sms.time, "time", return_value=base_ts + 5):
+                        self.assertTrue(hero_sms.confirm_pending_hero_sms_usage(run_ctx))
+
+                    with hero_sms._HERO_SMS_REUSE_LOCK:
+                        hero_sms._HERO_SMS_REUSE_STATE["entries"] = []
+                        hero_sms._HERO_SMS_REUSE_STATE["updated_at"] = 0.0
+
+                    with patch.object(hero_sms.time, "time", return_value=base_ts + 10):
+                        self.assertEqual(
+                            ("reuse-1", "+66964536019", 1),
+                            hero_sms._hero_sms_reuse_get("dr", 52),
+                        )
 
 
 if __name__ == "__main__":

@@ -199,10 +199,14 @@ def _hero_sms_reuse_pool_entries() -> list[dict[str, Any]]:
     return [entry for entry in raw_entries if isinstance(entry, dict)]
 
 
+def _read_reuse_state_from_db() -> dict[str, Any]:
+    saved = db_manager.get_sys_kv("sms_reuse_data")
+    return _normalize_reuse_state(saved)
+
+
 def _load_reuse_state_from_db():
     global _HERO_SMS_REUSE_STATE
-    saved = db_manager.get_sys_kv("sms_reuse_data")
-    normalized = _normalize_reuse_state(saved)
+    normalized = _read_reuse_state_from_db()
     with _HERO_SMS_REUSE_LOCK:
         _HERO_SMS_REUSE_STATE.clear()
         _HERO_SMS_REUSE_STATE.update(normalized)
@@ -226,36 +230,91 @@ def _hero_sms_reuse_remove(activation_id: str) -> None:
         _HERO_SMS_REUSE_STATE["updated_at"] = time.time()
     _sync_reuse_to_db()
 
+
+def _hero_sms_reuse_sync_from_db(reason: str = "") -> dict[str, Any]:
+    normalized = _read_reuse_state_from_db()
+    db_updated_at = float(normalized.get("updated_at") or 0.0)
+    with _HERO_SMS_REUSE_LOCK:
+        memory_before = float(_HERO_SMS_REUSE_STATE.get("updated_at") or 0.0)
+        synced = db_updated_at > memory_before
+        if synced:
+            _HERO_SMS_REUSE_STATE.clear()
+            _HERO_SMS_REUSE_STATE.update(normalized)
+        snapshot = {
+            "entries": [dict(entry) for entry in _hero_sms_reuse_pool_entries()],
+            "updated_at": float(_HERO_SMS_REUSE_STATE.get("updated_at") or 0.0),
+        }
+    if synced and reason:
+        _info(
+            "HeroSMS 复用池已从数据库同步: "
+            f"reason={reason}, db_updated_at={round(db_updated_at, 3)}, "
+            f"memory_updated_at_before={round(memory_before, 3)}, "
+            f"memory_updated_at_after={round(float(snapshot['updated_at'] or 0.0), 3)}, "
+            f"entries={len(snapshot['entries'])}"
+        )
+    return {
+        "db_updated_at": db_updated_at,
+        "memory_updated_at_before": memory_before,
+        "memory_updated_at_after": float(snapshot.get("updated_at") or 0.0),
+        "synced": synced,
+        "snapshot": snapshot,
+    }
+
 def _hero_sms_reuse_get(service: str, country: int) -> tuple[str, str, int]:
     now = time.time()
     ttl = _hero_sms_reuse_ttl_sec()
     max_uses = _hero_sms_reuse_max_uses()
     svc = str(service or "").strip()
     ctry = int(country)
-    with _HERO_SMS_REUSE_LOCK:
-        valid_entries: list[dict[str, Any]] = []
-        for raw_entry in _hero_sms_reuse_pool_entries():
-            entry = _normalize_reuse_entry(raw_entry)
-            if not entry:
-                continue
-            if entry["service"] != svc:
-                continue
-            if int(entry["country"]) != ctry:
-                continue
-            if int(entry["confirmed_uses"]) >= max_uses:
-                continue
-            if float(entry["updated_at"]) <= 0 or (now - float(entry["updated_at"])) > ttl:
-                continue
-            valid_entries.append(entry)
-        if not valid_entries:
-            return "", "", 0
-        valid_entries.sort(key=lambda entry: float(entry.get("updated_at") or 0.0), reverse=True)
-        chosen = valid_entries[0]
-        return (
-            str(chosen.get("activation_id") or "").strip(),
-            str(chosen.get("phone") or "").strip(),
-            int(chosen.get("confirmed_uses") or 0),
+    sync_info = _hero_sms_reuse_sync_from_db(reason=f"reuse_get:{svc}:{ctry}")
+    snapshot = sync_info.get("snapshot") if isinstance(sync_info, dict) else {}
+    snapshot_entries = snapshot.get("entries") if isinstance(snapshot, dict) else []
+    valid_entries: list[dict[str, Any]] = []
+    filtered_counts = {
+        "service_mismatch": 0,
+        "country_mismatch": 0,
+        "max_uses_reached": 0,
+        "ttl_expired": 0,
+        "invalid_entry": 0,
+    }
+
+    for raw_entry in snapshot_entries or []:
+        entry = _normalize_reuse_entry(raw_entry)
+        if not entry:
+            filtered_counts["invalid_entry"] += 1
+            continue
+        if entry["service"] != svc:
+            filtered_counts["service_mismatch"] += 1
+            continue
+        if int(entry["country"]) != ctry:
+            filtered_counts["country_mismatch"] += 1
+            continue
+        if int(entry["confirmed_uses"]) >= max_uses:
+            filtered_counts["max_uses_reached"] += 1
+            continue
+        if float(entry["updated_at"]) <= 0 or (now - float(entry["updated_at"])) > ttl:
+            filtered_counts["ttl_expired"] += 1
+            continue
+        valid_entries.append(entry)
+
+    if not valid_entries:
+        _info(
+            "HeroSMS 当前无可复用号码: "
+            f"service={svc}, country={ctry}, "
+            f"db_updated_at={round(float(sync_info.get('db_updated_at') or 0.0), 3)}, "
+            f"memory_updated_at={round(float(sync_info.get('memory_updated_at_after') or 0.0), 3)}, "
+            f"total_entries={len(snapshot_entries or [])}, "
+            f"candidate_entries=0, filtered_counts={filtered_counts}"
         )
+        return "", "", 0
+
+    valid_entries.sort(key=lambda entry: float(entry.get("updated_at") or 0.0), reverse=True)
+    chosen = valid_entries[0]
+    return (
+        str(chosen.get("activation_id") or "").strip(),
+        str(chosen.get("phone") or "").strip(),
+        int(chosen.get("confirmed_uses") or 0),
+    )
 
 def _hero_sms_reuse_set(activation_id: str, phone: str, service: str, country: int) -> None:
     aid = str(activation_id or "").strip()
