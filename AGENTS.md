@@ -28,6 +28,75 @@ admin
 /Users/meilinwang/Projects/openai-cpa-Public/data/config.yaml
 ```
 
+## 当前 Git / 分支开发规范
+
+当前仓库已经按“官方上游 + 个人 fork + 本地定制分支”的方式整理好，默认约定如下：
+
+- `upstream`：官方仓库 `https://github.com/wenfxl/openai-cpa.git`
+- `origin`：你自己的 fork `https://github.com/LeoW-tech/openai-cpa.git`
+- `upgrade/v10.1.5-custom`：当前正式使用中的定制开发分支，也是本地 Docker 镜像默认应基于的代码
+- `backup/pre-v10.1.5-local`：升级前的本地备份分支，只保留做兜底，不作为日常开发分支
+
+日常开发建议：
+
+- 平时优先在 `upgrade/v10.1.5-custom` 上继续改
+- 如果一次改动比较大，建议从 `upgrade/v10.1.5-custom` 再切一个功能分支，例如 `feat/xxx` 或 `fix/xxx`
+- 不要在 `backup/pre-v10.1.5-local` 上继续开发
+- 不要直接在 `upstream/main` 上开发
+- `origin/main` 暂时视为你 fork 上的干净主线，不作为当前定制版的日常开发入口
+
+## 最常用 Git 命令
+
+### 1. 查看当前所在分支、跟踪关系和远程地址
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && git status --short --branch && git branch -vv && git remote -v
+```
+
+### 2. 切回当前定制开发分支
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && git checkout upgrade/v10.1.5-custom
+```
+
+### 3. 从当前定制分支新建一个功能分支
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && git checkout upgrade/v10.1.5-custom && git pull --ff-only origin upgrade/v10.1.5-custom && git checkout -b feat/my-change
+```
+
+### 4. 查看官方最新提交和标签
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && git fetch upstream --tags && git log --oneline --decorate upstream/main -5 && git tag --sort=-version:refname | head
+```
+
+### 5. 把当前改动提交到本地 git
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && git add -A && git commit -m "feat: describe your change"
+```
+
+### 6. 推送当前分支到自己的 GitHub fork
+
+注意：本项目当前推送前会触发 `pytest` 检查，显式补上 `PYTHONPATH=.` 最稳妥。
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && PYTHONPATH=. git push -u origin HEAD
+```
+
+### 7. 本地先跑测试再提交 / 推送
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && PYTHONPATH=. pytest
+```
+
+### 8. 以后同步官方最新版时的推荐起手式
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && git checkout upgrade/v10.1.5-custom && git fetch upstream --tags && git log --oneline --decorate --left-right HEAD...upstream/main
+```
+
 ## 最常用命令
 
 ### 1. 查看当前容器是否在运行
@@ -87,8 +156,10 @@ cd /Users/meilinwang/Projects/openai-cpa-Public && lsof -nP -iTCP:8000 -sTCP:LIS
 ### 10. 测试首页是否可访问
 
 ```bash
-cd /Users/meilinwang/Projects/openai-cpa-Public && curl -I http://127.0.0.1:8000
+cd /Users/meilinwang/Projects/openai-cpa-Public && curl -sS -o /tmp/openai-cpa-home.html -w '%{http_code}\n' http://127.0.0.1:8000 && wc -c /tmp/openai-cpa-home.html
 ```
+
+说明：本项目首页对 `HEAD` 请求会返回 `405`，所以这里统一用 `GET` 检查服务可访问性。
 
 ## 一键重建本地 Docker 部署
 
@@ -178,6 +249,38 @@ cd /Users/meilinwang/Projects/openai-cpa-Public && git status
 cd /Users/meilinwang/Projects/openai-cpa-Public && git log --oneline -5
 ```
 
+### 5. 看当前分支和远程分支差异
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && git fetch --all --tags && git log --oneline --decorate --left-right HEAD...origin/$(git branch --show-current)
+```
+
+### 6. 看当前运行中的本地镜像版本和容器状态
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && docker ps --filter name=openai-cpa-local --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' && docker images openai-cpa-local
+```
+
+## 常用开发 / 部署命令
+
+### 1. 在当前定制分支上一键重建并启动本地 Docker
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && git checkout upgrade/v10.1.5-custom && docker rm -f openai-cpa-local >/dev/null 2>&1 || true && docker build -t openai-cpa-local:latest . && docker run -d --name openai-cpa-local -p 8000:8000 -v /Users/meilinwang/Projects/openai-cpa-Public/data:/app/data -v /var/run/docker.sock:/var/run/docker.sock --add-host=host.docker.internal:host-gateway openai-cpa-local:latest
+```
+
+### 2. 修改代码后，一键测试 + 提交 + 推送当前分支
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && PYTHONPATH=. pytest && git add -A && git commit -m "feat: describe your change" && PYTHONPATH=. git push -u origin HEAD
+```
+
+### 3. 从当前定制分支切一个修复分支并启动本地开发
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && git checkout upgrade/v10.1.5-custom && git pull --ff-only origin upgrade/v10.1.5-custom && git checkout -b fix/my-change && docker rm -f openai-cpa-local >/dev/null 2>&1 || true && docker build -t openai-cpa-local:latest . && docker run -d --name openai-cpa-local -p 8000:8000 -v /Users/meilinwang/Projects/openai-cpa-Public/data:/app/data -v /var/run/docker.sock:/var/run/docker.sock --add-host=host.docker.internal:host-gateway openai-cpa-local:latest
+```
+
 ## 提交本地 git
 
 更新文档、配置说明或代码后，优先在项目根目录执行：
@@ -198,10 +301,19 @@ cd /Users/meilinwang/Projects/openai-cpa-Public && git add AGENTS.md .gitignore 
 cd /Users/meilinwang/Projects/openai-cpa-Public && git add -A && git commit -m "feat: update local deployment workflow"
 ```
 
+如果你还要顺手推送到自己的 fork，推荐直接用：
+
+```bash
+cd /Users/meilinwang/Projects/openai-cpa-Public && PYTHONPATH=. pytest && git add -A && git commit -m "feat: describe your change" && PYTHONPATH=. git push -u origin HEAD
+```
+
 ## 当前默认约定
 
 - Web 地址固定用 `http://127.0.0.1:8000`
 - 默认密码先用 `admin`
 - 主要维护方式优先使用本地 Docker 容器 `openai-cpa-local`
 - 配置文件统一改 `data/config.yaml`
+- 当前默认开发分支是 `upgrade/v10.1.5-custom`
+- 官方更新一律从 `upstream` 拉，不直接拿 `origin/main` 当官方基线
+- 日常推送优先推到你自己的 fork，也就是 `origin`
 - 所有命令都默认从项目根目录执行
