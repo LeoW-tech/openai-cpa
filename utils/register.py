@@ -758,7 +758,8 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             ok, next_url_or_reason = _try_verify_phone_via_hero_sms(
                                 session=s_reg,
                                 proxies=proxies,
-                                hint_url=code_account_url
+                                hint_url=code_account_url,
+                                run_ctx=run_ctx,
                             )
 
                             if ok and next_url_or_reason:
@@ -1206,7 +1207,8 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                         ok, next_url_or_reason = _try_verify_phone_via_hero_sms(
                             session=s_log,
                             proxies=proxies,
-                            hint_url=current_url
+                            hint_url=current_url,
+                            run_ctx=run_ctx,
                         )
 
                         if ok and next_url_or_reason:

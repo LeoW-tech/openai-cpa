@@ -90,7 +90,11 @@ def _hero_sms_price_cache_ttl_sec() -> int: return 90
 
 def _hero_sms_reuse_ttl_sec() -> int: return 1200
 
-def _hero_sms_reuse_max_uses() -> int: return 2
+def _hero_sms_reuse_max_uses() -> int:
+    try:
+        return max(1, int(getattr(cfg, "HERO_SMS_REUSE_MAX_USES", 2)))
+    except Exception:
+        return 2
 
 def _hero_sms_mark_ready_enabled() -> bool: return True
 
@@ -106,11 +110,7 @@ _HERO_SMS_RUNTIME: dict[str, float] = {
 }
 _HERO_SMS_REUSE_LOCK = threading.Lock()
 _HERO_SMS_REUSE_STATE: dict[str, Any] = {
-    "activation_id": "",
-    "phone": "",
-    "service": "",
-    "country": -1,
-    "uses": 0,
+    "entries": [],
     "updated_at": 0.0,
 }
 _HERO_SMS_COUNTRY_LOCK = threading.Lock()
@@ -136,17 +136,95 @@ _OPENAI_SMS_BLOCKED_COUNTRY_IDS = {
     191,  # North Korea
 }
 
+def _normalize_reuse_entry(raw: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    activation_id = str(raw.get("activation_id") or "").strip()
+    phone = str(raw.get("phone") or "").strip()
+    if not activation_id or not phone:
+        return None
+    try:
+        country = int(raw.get("country") or -1)
+    except Exception:
+        country = -1
+    try:
+        confirmed_uses = int(raw.get("confirmed_uses", raw.get("uses", 0)) or 0)
+    except Exception:
+        confirmed_uses = 0
+    try:
+        updated_at = float(raw.get("updated_at") or 0.0)
+    except Exception:
+        updated_at = 0.0
+    return {
+        "activation_id": activation_id,
+        "phone": phone,
+        "service": str(raw.get("service") or "").strip(),
+        "country": country,
+        "confirmed_uses": max(0, confirmed_uses),
+        "updated_at": max(0.0, updated_at),
+    }
+
+
+def _normalize_reuse_state(saved: Any) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    updated_at = 0.0
+    if isinstance(saved, dict) and isinstance(saved.get("entries"), list):
+        for raw_entry in saved.get("entries") or []:
+            entry = _normalize_reuse_entry(raw_entry)
+            if entry:
+                entries.append(entry)
+        try:
+            updated_at = float(saved.get("updated_at") or 0.0)
+        except Exception:
+            updated_at = 0.0
+    else:
+        entry = _normalize_reuse_entry(saved)
+        if entry:
+            entries.append(entry)
+            updated_at = float(entry.get("updated_at") or 0.0)
+    updated_at = max(updated_at, max([float(x.get("updated_at") or 0.0) for x in entries], default=0.0))
+    return {"entries": entries, "updated_at": updated_at}
+
+
+def get_hero_sms_reuse_pool_snapshot() -> dict[str, Any]:
+    with _HERO_SMS_REUSE_LOCK:
+        return {
+            "entries": [dict(entry) for entry in (_HERO_SMS_REUSE_STATE.get("entries") or []) if isinstance(entry, dict)],
+            "updated_at": float(_HERO_SMS_REUSE_STATE.get("updated_at") or 0.0),
+        }
+
+
+def _hero_sms_reuse_pool_entries() -> list[dict[str, Any]]:
+    raw_entries = _HERO_SMS_REUSE_STATE.get("entries") or []
+    return [entry for entry in raw_entries if isinstance(entry, dict)]
+
+
 def _load_reuse_state_from_db():
     global _HERO_SMS_REUSE_STATE
     saved = db_manager.get_sys_kv("sms_reuse_data")
-    if saved and isinstance(saved, dict):
-        with _HERO_SMS_REUSE_LOCK:
-            _HERO_SMS_REUSE_STATE.update(saved)
+    normalized = _normalize_reuse_state(saved)
+    with _HERO_SMS_REUSE_LOCK:
+        _HERO_SMS_REUSE_STATE.clear()
+        _HERO_SMS_REUSE_STATE.update(normalized)
 
 _load_reuse_state_from_db()
 
 def _sync_reuse_to_db():
-    db_manager.set_sys_kv("sms_reuse_data", _HERO_SMS_REUSE_STATE)
+    db_manager.set_sys_kv("sms_reuse_data", get_hero_sms_reuse_pool_snapshot())
+
+
+def _hero_sms_reuse_remove(activation_id: str) -> None:
+    aid = str(activation_id or "").strip()
+    if not aid:
+        return
+    with _HERO_SMS_REUSE_LOCK:
+        _HERO_SMS_REUSE_STATE["entries"] = [
+            dict(entry)
+            for entry in _hero_sms_reuse_pool_entries()
+            if str(entry.get("activation_id") or "").strip() != aid
+        ]
+        _HERO_SMS_REUSE_STATE["updated_at"] = time.time()
+    _sync_reuse_to_db()
 
 def _hero_sms_reuse_get(service: str, country: int) -> tuple[str, str, int]:
     now = time.time()
@@ -155,24 +233,29 @@ def _hero_sms_reuse_get(service: str, country: int) -> tuple[str, str, int]:
     svc = str(service or "").strip()
     ctry = int(country)
     with _HERO_SMS_REUSE_LOCK:
-        aid = str(_HERO_SMS_REUSE_STATE.get("activation_id") or "").strip()
-        phone = str(_HERO_SMS_REUSE_STATE.get("phone") or "").strip()
-        state_svc = str(_HERO_SMS_REUSE_STATE.get("service") or "").strip()
-        try:
-            state_country = int(_HERO_SMS_REUSE_STATE.get("country") or -1)
-        except Exception:
-            state_country = -1
-        uses = int(_HERO_SMS_REUSE_STATE.get("uses") or 0)
-        updated = float(_HERO_SMS_REUSE_STATE.get("updated_at") or 0.0)
-
-        valid = bool(aid and phone)
-        valid = valid and (state_svc == svc)
-        valid = valid and (state_country == ctry)
-        valid = valid and (uses < max_uses)
-        valid = valid and (updated > 0 and (now - updated) <= ttl)
-        if not valid:
+        valid_entries: list[dict[str, Any]] = []
+        for raw_entry in _hero_sms_reuse_pool_entries():
+            entry = _normalize_reuse_entry(raw_entry)
+            if not entry:
+                continue
+            if entry["service"] != svc:
+                continue
+            if int(entry["country"]) != ctry:
+                continue
+            if int(entry["confirmed_uses"]) >= max_uses:
+                continue
+            if float(entry["updated_at"]) <= 0 or (now - float(entry["updated_at"])) > ttl:
+                continue
+            valid_entries.append(entry)
+        if not valid_entries:
             return "", "", 0
-        return aid, phone, uses
+        valid_entries.sort(key=lambda entry: float(entry.get("updated_at") or 0.0), reverse=True)
+        chosen = valid_entries[0]
+        return (
+            str(chosen.get("activation_id") or "").strip(),
+            str(chosen.get("phone") or "").strip(),
+            int(chosen.get("confirmed_uses") or 0),
+        )
 
 def _hero_sms_reuse_set(activation_id: str, phone: str, service: str, country: int) -> None:
     aid = str(activation_id or "").strip()
@@ -180,30 +263,94 @@ def _hero_sms_reuse_set(activation_id: str, phone: str, service: str, country: i
     if not aid or not ph:
         return
     with _HERO_SMS_REUSE_LOCK:
-        _HERO_SMS_REUSE_STATE["activation_id"] = aid
-        _HERO_SMS_REUSE_STATE["phone"] = ph
-        _HERO_SMS_REUSE_STATE["service"] = str(service or "").strip()
-        _HERO_SMS_REUSE_STATE["country"] = int(country)
-        _HERO_SMS_REUSE_STATE["uses"] = 0
-        _HERO_SMS_REUSE_STATE["updated_at"] = time.time()
+        now = time.time()
+        entries = [dict(entry) for entry in _hero_sms_reuse_pool_entries()]
+        kept_entries: list[dict[str, Any]] = []
+        existing_confirmed_uses = 0
+        for entry in entries:
+            if str(entry.get("activation_id") or "").strip() == aid:
+                try:
+                    existing_confirmed_uses = int(entry.get("confirmed_uses", entry.get("uses", 0)) or 0)
+                except Exception:
+                    existing_confirmed_uses = 0
+                continue
+            kept_entries.append(entry)
+        kept_entries.append({
+            "activation_id": aid,
+            "phone": ph,
+            "service": str(service or "").strip(),
+            "country": int(country),
+            "confirmed_uses": max(0, existing_confirmed_uses),
+            "updated_at": now,
+        })
+        _HERO_SMS_REUSE_STATE["entries"] = kept_entries
+        _HERO_SMS_REUSE_STATE["updated_at"] = now
     _sync_reuse_to_db()
 
-def _hero_sms_reuse_touch(increase: bool = False) -> None:
+def _hero_sms_reuse_touch(activation_id: str, increase: bool = False) -> None:
+    aid = str(activation_id or "").strip()
+    if not aid:
+        return
     with _HERO_SMS_REUSE_LOCK:
-        if increase:
-            _HERO_SMS_REUSE_STATE["uses"] = int(_HERO_SMS_REUSE_STATE.get("uses") or 0) + 1
-        _HERO_SMS_REUSE_STATE["updated_at"] = time.time()
+        now = time.time()
+        entries: list[dict[str, Any]] = []
+        for raw_entry in _hero_sms_reuse_pool_entries():
+            entry = dict(raw_entry)
+            if str(entry.get("activation_id") or "").strip() == aid:
+                if increase:
+                    try:
+                        entry["confirmed_uses"] = int(entry.get("confirmed_uses", entry.get("uses", 0)) or 0) + 1
+                    except Exception:
+                        entry["confirmed_uses"] = 1
+                entry["updated_at"] = now
+            entries.append(entry)
+        _HERO_SMS_REUSE_STATE["entries"] = entries
+        _HERO_SMS_REUSE_STATE["updated_at"] = now
     _sync_reuse_to_db()
+
+
+def _hero_sms_confirm_reuse_usage(activation_id: str) -> None:
+    _hero_sms_reuse_touch(activation_id, increase=True)
 
 def _hero_sms_reuse_clear() -> None:
     with _HERO_SMS_REUSE_LOCK:
-        _HERO_SMS_REUSE_STATE["activation_id"] = ""
-        _HERO_SMS_REUSE_STATE["phone"] = ""
-        _HERO_SMS_REUSE_STATE["service"] = ""
-        _HERO_SMS_REUSE_STATE["country"] = -1
-        _HERO_SMS_REUSE_STATE["uses"] = 0
+        _HERO_SMS_REUSE_STATE["entries"] = []
         _HERO_SMS_REUSE_STATE["updated_at"] = 0.0
     _sync_reuse_to_db()
+
+
+def _hero_sms_is_deferred_counting(run_ctx: Optional[dict[str, Any]]) -> bool:
+    return bool(run_ctx and run_ctx.get("hero_sms_counting_mode") == "deferred_sub2api")
+
+
+def _hero_sms_record_pending_usage(
+        run_ctx: Optional[dict[str, Any]],
+        *,
+        activation_id: str,
+        phone: str,
+        service: str,
+        country: int,
+) -> None:
+    if run_ctx is None:
+        return
+    run_ctx["hero_sms_pending_usage"] = {
+        "activation_id": str(activation_id or "").strip(),
+        "phone": str(phone or "").strip(),
+        "service": str(service or "").strip(),
+        "country": int(country),
+    }
+
+
+def confirm_pending_hero_sms_usage(run_ctx: Optional[dict[str, Any]]) -> bool:
+    pending = run_ctx.get("hero_sms_pending_usage") if isinstance(run_ctx, dict) else None
+    if not isinstance(pending, dict):
+        return False
+    activation_id = str(pending.get("activation_id") or "").strip()
+    if not activation_id:
+        return False
+    _hero_sms_confirm_reuse_usage(activation_id)
+    run_ctx["hero_sms_pending_usage_confirmed"] = True
+    return True
 
 def _hero_sms_country_is_on_cooldown(country_id: int) -> bool:
     cid = int(country_id)
@@ -1007,6 +1154,7 @@ def _try_verify_phone_via_hero_sms(
         *,
         proxies: Any,
         hint_url: str = "",
+        run_ctx: Optional[dict[str, Any]] = None,
 ) -> tuple[bool, str]:
     if not _hero_sms_enabled():
         return False, "HeroSMS 未配置 API Key 或HeroSMS主开关未开启，如果不想花钱接码请忽略该条提示"
@@ -1161,6 +1309,7 @@ def _try_verify_phone_via_hero_sms(
 
         service_code = _hero_sms_resolve_service_code(proxies)
         preferred_country_id = _hero_sms_resolve_country_id(proxies)
+        deferred_counting = _hero_sms_is_deferred_counting(run_ctx)
         _info(
             "HeroSMS 国家策略: "
             f"超时阈值：{_hero_sms_country_timeout_limit()}次, "
@@ -1194,7 +1343,17 @@ def _try_verify_phone_via_hero_sms(
                 if ok_reuse:
                     _hero_sms_country_mark_success(country_id)
                     _hero_sms_country_record_result(country_id, True, "reuse_success")
-                    _hero_sms_reuse_touch(increase=True)
+                    if deferred_counting:
+                        _hero_sms_reuse_touch(reuse_id, increase=False)
+                        _hero_sms_record_pending_usage(
+                            run_ctx,
+                            activation_id=reuse_id,
+                            phone=reuse_phone,
+                            service=service_code,
+                            country=country_id,
+                        )
+                    else:
+                        _hero_sms_confirm_reuse_usage(reuse_id)
                     return True, next_reuse
                 last_reason = reason_reuse or "复用手机号失败"
                 _hero_sms_country_record_result(country_id, False, last_reason)
@@ -1202,7 +1361,7 @@ def _try_verify_phone_via_hero_sms(
                     switched = _hero_sms_country_mark_timeout(country_id)
                     if switched:
                         _hero_sms_set_status(reuse_id, 8, proxies)
-                        _hero_sms_reuse_clear()
+                        _hero_sms_reuse_remove(reuse_id)
                         next_country = _hero_sms_pick_country_id(
                             proxies,
                             service_code=service_code,
@@ -1215,18 +1374,18 @@ def _try_verify_phone_via_hero_sms(
                             )
                             country_id = next_country
                         else:
-                            _hero_sms_reuse_touch(increase=True)
+                            _hero_sms_reuse_touch(reuse_id, increase=(not deferred_counting))
                             _hero_sms_set_status(reuse_id, 3, proxies)
                             _warn(f"复用手机号未收到短信，保留号码待下次继续: {last_reason}")
                             return False, "接码超时，已保留复用号码"
                     else:
-                        _hero_sms_reuse_touch(increase=True)
+                        _hero_sms_reuse_touch(reuse_id, increase=(not deferred_counting))
                         _hero_sms_set_status(reuse_id, 3, proxies)
                         _warn(f"复用手机号未收到短信，保留号码待下次继续: {last_reason}")
                         return False, "接码超时，已保留复用号码"
                 _warn(f"复用手机号失败，改为新购号码: {last_reason}")
                 _hero_sms_set_status(reuse_id, 8, proxies)
-                _hero_sms_reuse_clear()
+                _hero_sms_reuse_remove(reuse_id)
 
         for attempt in range(1, max_tries + 1):
             _raise_if_stopped()
@@ -1262,7 +1421,16 @@ def _try_verify_phone_via_hero_sms(
                 _hero_sms_country_record_result(country_id, True, "new_success")
                 if reuse_on:
                     _hero_sms_reuse_set(activation_id, phone_number, service_code, country_id)
-                    _hero_sms_reuse_touch(increase=True)
+                    if deferred_counting:
+                        _hero_sms_record_pending_usage(
+                            run_ctx,
+                            activation_id=activation_id,
+                            phone=phone_number,
+                            service=service_code,
+                            country=country_id,
+                        )
+                    else:
+                        _hero_sms_confirm_reuse_usage(activation_id)
                 return True, next_new
             last_reason = reason_new or "手机验证失败"
             _hero_sms_country_record_result(country_id, False, last_reason)
@@ -1270,7 +1438,7 @@ def _try_verify_phone_via_hero_sms(
                 switched = _hero_sms_country_mark_timeout(country_id)
                 if switched:
                     _hero_sms_set_status(activation_id, 8, proxies)
-                    _hero_sms_reuse_clear()
+                    _hero_sms_reuse_remove(activation_id)
                     next_country = _hero_sms_pick_country_id(
                         proxies,
                         service_code=service_code,
@@ -1284,7 +1452,7 @@ def _try_verify_phone_via_hero_sms(
                         country_id = next_country
                         continue
                 _hero_sms_reuse_set(activation_id, phone_number, service_code, country_id)
-                _hero_sms_reuse_touch(increase=True)
+                _hero_sms_reuse_touch(activation_id, increase=(not deferred_counting))
                 _hero_sms_set_status(activation_id, 3, proxies)
                 _warn("新购号码接码超时，已保留号码供后续复用，停止继续购号")
                 return False, "接码超时，已保留复用号码"

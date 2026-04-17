@@ -487,6 +487,11 @@ def reload_all_configs():
     except:
         HERO_SMS_POLL_TIMEOUT_SEC = 120
 
+    try:
+        HERO_SMS_REUSE_MAX_USES = int(_hero_sms_conf.get("reuse_max_uses", 2))
+    except:
+        HERO_SMS_REUSE_MAX_USES = 2
+
 
     _ai = _c.get("ai_service", {})
     AI_API_BASE = str(_ai.get("api_base", "https://api.openai.com/v1")).strip().rstrip("/")

@@ -33,6 +33,7 @@ from utils.register import run, refresh_oauth_token as _refresh_oauth_token
 from utils.proxy_manager import smart_switch_node
 from utils.integrations.sub2api_client import Sub2APIClient
 from utils.integrations.tg_notifier import send_tg_msg_sync
+from utils.integrations import hero_sms
 
 _stats_lock = threading.Lock()
 sub_fail_counts = {}
@@ -482,6 +483,8 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
     if getattr(cfg, 'GLOBAL_STOP', False):
         return "stopped"
     global run_stats
+    if run_ctx is not None:
+        run_ctx["local_account_saved"] = False
 
     last_email = mail_service.get_last_email()
     if not last_email or "@" not in last_email:
@@ -539,7 +542,10 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
 
         # 存入本地数据库
         if (cpa_upload and cfg.SAVE_TO_LOCAL_IN_CPA_MODE) or not cpa_upload:
-            if db_manager.save_account_to_db(account_email, password, token_json_str):
+            saved_ok = db_manager.save_account_to_db(account_email, password, token_json_str)
+            if run_ctx is not None:
+                run_ctx["local_account_saved"] = bool(saved_ok)
+            if saved_ok:
                 print(f"[{ts()}] [SUCCESS] 账号密码与 Token 已安全存入: {mask_email(account_email)}")
 
         # CPA 云端上传
@@ -572,6 +578,18 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
 
         send_tg_msg_sync(success_text)
     return ret_status
+
+
+def confirm_sub2api_hero_sms_usage(status: str, run_ctx: dict, sub2api_ok: bool) -> bool:
+    if status != "success":
+        return False
+    if not isinstance(run_ctx, dict):
+        return False
+    if not bool(run_ctx.get("local_account_saved")):
+        return False
+    if not sub2api_ok:
+        return False
+    return bool(hero_sms.confirm_pending_hero_sms_usage(run_ctx))
 
 def run_and_refresh(proxy, args, cpa_upload=False, skip_switch=False):
     proxy = format_docker_url(proxy)
@@ -1149,7 +1167,7 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event):
                     if not skip_switch:
                         if not smart_switch_node(p):
                             print(f"[{ts()}] [WARNING] [Sub2API补货] 全局节点切换失败...")
-                    run_ctx = {}
+                    run_ctx = {"hero_sms_counting_mode": "deferred_sub2api"}
                     result = run(p, run_ctx=run_ctx)
                     status = handle_registration_result(result, cpa_upload=False, run_ctx=run_ctx)
 
@@ -1159,6 +1177,7 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event):
                             ok, msg = client.add_account(token_dict)
                             if ok: print(f"[{ts()}] [SUCCESS] Sub2API 补货入库成功")
                             else: print(f"[{ts()}] [ERROR] Sub2API 补货入库失败: {msg}")
+                            confirm_sub2api_hero_sms_usage(status=status, run_ctx=run_ctx, sub2api_ok=ok)
                     return status
 
                 def _sub2api_worker():
