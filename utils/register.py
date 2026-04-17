@@ -156,6 +156,21 @@ def _analytics_metrics(run_ctx: Optional[dict]) -> dict:
     return metrics
 
 
+def _split_email(email: str) -> Tuple[str, str]:
+    text = str(email or "").strip().lower()
+    if "@" not in text:
+        return text, ""
+    return tuple(text.split("@", 1))
+
+
+def _derive_master_email(email: str) -> str:
+    local_part, domain = _split_email(email)
+    if not local_part or not domain:
+        return ""
+    base_local = local_part.split("+", 1)[0]
+    return f"{base_local}@{domain}"
+
+
 def _history_event(
         run_ctx: Optional[dict],
         *,
