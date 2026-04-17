@@ -11,6 +11,7 @@ import subprocess
 import yaml
 import urllib.parse
 import httpx
+import importlib
 from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -18,7 +19,6 @@ from typing import List, Optional, Any
 from cloudflare import Cloudflare
 from utils import core_engine, db_manager
 from utils.config import reload_all_configs
-from utils.integrations.sub2api_client import Sub2APIClient
 from utils.integrations.tg_notifier import send_tg_msg_async
 from utils.email_providers.gmail_oauth_handler import GmailOAuthHandler
 from curl_cffi import requests as cffi_requests
@@ -32,6 +32,20 @@ CONFIG_PATH = os.path.join(BASE_DIR, "data", "config.yaml")
 GMAIL_CLIENT_SECRETS = os.path.join(BASE_DIR, "data", "credentials.json")
 GMAIL_TOKEN_PATH = os.path.join(BASE_DIR, "data", "token.json")
 GMAIL_VERIFIER_PATH = os.path.join(BASE_DIR, "data", "temp_verifier.txt")
+
+sub2api_client_module = importlib.import_module("utils.integrations.sub2api_client")
+Sub2APIClient = getattr(sub2api_client_module, "Sub2APIClient")
+DEFAULT_SUB2API_MODEL_IDS = (
+    "gpt-5.1",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
+    "gpt-5.2-codex",
+    "gpt-5.3",
+    "gpt-5.3-codex",
+    "gpt-5.4",
+)
 
 class DummyArgs:
     def __init__(self, proxy=None, once=False):
@@ -106,6 +120,18 @@ class UpdateMailboxStatusReq(BaseModel):
 # ==========================================
 # 辅助函数
 # ==========================================
+def _build_default_sub2api_model_mapping() -> dict[str, str]:
+    builder = getattr(sub2api_client_module, "build_default_model_mapping", None)
+    if callable(builder):
+        try:
+            mapping = builder()
+            if isinstance(mapping, dict) and mapping:
+                return mapping
+        except Exception:
+            pass
+    return {model_id: model_id for model_id in DEFAULT_SUB2API_MODEL_IDS}
+
+
 def get_web_password():
     try:
         if os.path.exists(CONFIG_PATH):
@@ -542,7 +568,10 @@ async def export_sub2api_accounts(req: ExportReq, token: str = Depends(verify_to
             account_item = {
                 "name": str(td.get("email", "unknown"))[:64],
                 "platform": "openai", "type": "oauth",
-                "credentials": {"refresh_token": td.get("refresh_token", "")},
+                "credentials": {
+                    "refresh_token": td.get("refresh_token", ""),
+                    "model_mapping": _build_default_sub2api_model_mapping(),
+                },
                 "concurrency": int(sub2api_settings.get("account_concurrency", 10)),
                 "priority": int(sub2api_settings.get("account_priority", 1)),
                 "rate_multiplier": float(sub2api_settings.get("account_rate_multiplier", 1.0)),

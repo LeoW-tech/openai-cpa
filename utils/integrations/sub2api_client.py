@@ -8,6 +8,22 @@ from curl_cffi import requests as cffi_requests
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SUB2API_MODEL_IDS = (
+    "gpt-5.1",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
+    "gpt-5.2-codex",
+    "gpt-5.3",
+    "gpt-5.3-codex",
+    "gpt-5.4",
+)
+
+
+def build_default_model_mapping() -> Dict[str, str]:
+    return {model_id: model_id for model_id in DEFAULT_SUB2API_MODEL_IDS}
+
 
 class Sub2APIClient:
     def __init__(self, api_url: str, api_key: str):
@@ -126,11 +142,7 @@ class Sub2APIClient:
                 "client_id": token_data.get("client_id", ""),
                 "expires_at": int(time.time() + 864000),
                 "expires_in": 863999,
-                "model_mapping": {
-                    "gpt-4o": "gpt-4o",
-                    "gpt-4": "gpt-4",
-                    "gpt-3.5-turbo": "gpt-3.5-turbo",
-                },
+                "model_mapping": build_default_model_mapping(),
                 "organization_id": token_data.get("workspace_id", ""),
                 "refresh_token": token_data.get("refresh_token", ""),
             },
@@ -221,47 +233,7 @@ class Sub2APIClient:
 
     def add_account(self, token_data: Dict[str, Any]) -> Tuple[bool, str]:
         settings = self._get_push_settings()
-        refresh_token = token_data.get("refresh_token", "")
-        proxy_name = str(token_data.get("sub2api_proxy_name", "") or "").strip()
-
-        if proxy_name or not refresh_token:
-            return self._import_account(token_data, settings)
-
-        url = f"{self.api_url}/api/v1/admin/accounts"
-        payload = {
-            "name": token_data.get("email", "unknown")[:64],
-            "platform": "openai",
-            "type": "oauth",
-            "credentials": {"refresh_token": refresh_token},
-            "concurrency": settings["concurrency"],
-            "priority": settings["priority"],
-            "rate_multiplier": settings["rate_multiplier"],
-            "extra": self._build_account_extra(settings),
-        }
-        if settings["group_ids"]:
-            payload["group_ids"] = settings["group_ids"]
-
-        try:
-            response = cffi_requests.post(
-                url,
-                json=payload,
-                headers=self.headers,
-                timeout=30,
-                impersonate="chrome110",
-                proxies=None,
-            )
-            ok, result = self._handle_response(response, success_codes=(200, 201))
-            if not ok:
-                logger.warning("Sub2API direct create failed, falling back to import endpoint: %s", result)
-                return self._import_account(token_data, settings)
-
-            account_id = result.get("data", {}).get("id") if isinstance(result, dict) else None
-            if account_id:
-                self._refresh_created_account(str(account_id))
-            return True, "Sub2API account created successfully"
-        except Exception as exc:
-            logger.warning("Sub2API direct create raised an exception, falling back to import: %s", exc)
-            return self._import_account(token_data, settings)
+        return self._import_account(token_data, settings)
 
     def update_account(self, account_id: str, update_data: Dict[str, Any]) -> Tuple[bool, Any]:
         url = f"{self.api_url}/api/v1/admin/accounts/{account_id}"

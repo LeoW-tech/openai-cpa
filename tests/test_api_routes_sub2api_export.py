@@ -7,6 +7,18 @@ import builtins
 from contextlib import ExitStack
 from unittest.mock import patch
 
+EXPECTED_MODEL_MAPPING = {
+    "gpt-5.1": "gpt-5.1",
+    "gpt-5.1-codex": "gpt-5.1-codex",
+    "gpt-5.1-codex-max": "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini": "gpt-5.1-codex-mini",
+    "gpt-5.2": "gpt-5.2",
+    "gpt-5.2-codex": "gpt-5.2-codex",
+    "gpt-5.3": "gpt-5.3",
+    "gpt-5.3-codex": "gpt-5.3-codex",
+    "gpt-5.4": "gpt-5.4",
+}
+
 
 class ApiRoutesSub2ApiExportTests(unittest.TestCase):
     def setUp(self):
@@ -20,10 +32,17 @@ class ApiRoutesSub2ApiExportTests(unittest.TestCase):
                         reload_proxy_config=lambda *args, **kwargs: None,
                         get_last_success_node_name=lambda *args, **kwargs: None,
                     ),
-                    "utils.integrations.sub2api_client": types.SimpleNamespace(Sub2APIClient=object),
+                    "utils.integrations.sub2api_client": types.SimpleNamespace(
+                        Sub2APIClient=object,
+                        build_default_model_mapping=lambda: EXPECTED_MODEL_MAPPING.copy(),
+                    ),
                     "utils.integrations.tg_notifier": types.SimpleNamespace(
                         send_tg_msg_sync=lambda *args, **kwargs: None,
                         send_tg_msg_async=lambda *args, **kwargs: None,
+                    ),
+                    "utils.register": types.SimpleNamespace(
+                        run=lambda *args, **kwargs: None,
+                        refresh_oauth_token=lambda *args, **kwargs: (False, {}),
                     ),
                     "utils.email_providers.gmail_oauth_handler": types.SimpleNamespace(GmailOAuthHandler=object),
                     "utils.integrations.clash_manager": types.SimpleNamespace(
@@ -72,6 +91,8 @@ class ApiRoutesSub2ApiExportTests(unittest.TestCase):
         self.assertEqual("success", result["status"])
         account = result["data"]["accounts"][0]
         self.assertEqual("🇯🇵 日本W03 | IEPL", account["proxy_name"])
+        self.assertEqual("refresh-token", account["credentials"]["refresh_token"])
+        self.assertEqual(EXPECTED_MODEL_MAPPING, account["credentials"]["model_mapping"])
 
 
 if __name__ == "__main__":
