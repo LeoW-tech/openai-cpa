@@ -120,6 +120,25 @@ def get_last_success_node_name(proxy_url: str = None):
     with _node_cache_lock:
         return _last_success_nodes.get(key)
 
+def _pick_switchable_nodes(valid_nodes, current_node):
+    """优先避开当前正在使用的节点，确保顺序任务切换到新出口。"""
+    current = str(current_node or "").strip()
+    if current and len(valid_nodes) > 1:
+        candidates = [node for node in valid_nodes if str(node).strip() != current]
+        if candidates:
+            return candidates
+    return valid_nodes
+
+def _is_leaf_proxy(proxies_data, proxy_name):
+    """只允许切换真实代理节点，避免把策略组误当作出口。"""
+    item = proxies_data.get(proxy_name, {})
+    proxy_type = str(item.get("type") or "").strip().lower()
+    if "all" in item:
+        return False
+    if proxy_type in {"selector", "urltest", "fallback", "loadbalance", "relay"}:
+        return False
+    return True
+
 def test_proxy_liveness(proxy_url=None):
     """测试当前代理是否可用 (脱敏)"""
     raw_url = proxy_url if proxy_url else LOCAL_PROXY_URL
@@ -197,19 +216,24 @@ def _do_smart_switch(proxy_url=None):
             return False
             
         safe_group_name = urllib.parse.quote(actual_group_name)
-        all_nodes = proxies_data[actual_group_name].get('all', [])
+        group_data = proxies_data[actual_group_name]
+        all_nodes = group_data.get('all', [])
+        current_node = group_data.get('now')
         
         valid_nodes = [
-            n for n in all_nodes 
-            if not any(kw.upper() in n.upper() for kw in NODE_BLACKLIST)
+            n for n in all_nodes
+            if _is_leaf_proxy(proxies_data, n)
+            and not any(kw.upper() in n.upper() for kw in NODE_BLACKLIST)
         ]
         
         if not valid_nodes:
             print(f"[{ts()}] [ERROR] {display_name} 过滤后无可用节点，请检查黑名单。")
             return False
 
+        switchable_nodes = _pick_switchable_nodes(valid_nodes, current_node)
+
         if FASTEST_MODE:
-            print(f"\n[{ts()}] [代理池] {display_name} 开启优选模式，并发测速 {len(valid_nodes)} 个节点...")
+            print(f"\n[{ts()}] [代理池] {display_name} 开启优选模式，并发测速 {len(switchable_nodes)} 个节点...")
             
             session = std_requests.Session()
             
@@ -223,9 +247,9 @@ def _do_smart_switch(proxy_url=None):
                 except:
                     pass
 
-            thread_count = min(10, len(valid_nodes))
+            thread_count = min(10, len(switchable_nodes))
             with ThreadPoolExecutor(max_workers=thread_count) as executor:
-                executor.map(trigger_delay, valid_nodes)
+                executor.map(trigger_delay, switchable_nodes)
                 
             session.close()
                 
@@ -238,7 +262,7 @@ def _do_smart_switch(proxy_url=None):
                     best_node = None
                     min_delay = float('inf')
                     
-                    for n in valid_nodes:
+                    for n in switchable_nodes:
                         history = p_data.get(n, {}).get("history", [])
                         if history:
                             delay = history[-1].get("delay", 0)
@@ -265,7 +289,7 @@ def _do_smart_switch(proxy_url=None):
 
         max_retries = 10
         for i in range(1, max_retries + 1):
-            selected_node = random.choice(valid_nodes)
+            selected_node = random.choice(switchable_nodes)
             
             print(f"\n[{ts()}] [代理池] {display_name} 尝试切换节点: [{clean_for_log(selected_node)}] ({i}/{max_retries})")
             

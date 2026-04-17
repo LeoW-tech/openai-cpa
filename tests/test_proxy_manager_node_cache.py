@@ -44,6 +44,76 @@ class ProxyManagerNodeCacheTests(unittest.TestCase):
 
         self.assertEqual(raw_node_name, proxy_manager.get_last_success_node_name(proxy_url))
 
+    def test_switch_skips_current_node_when_alternative_exists(self):
+        proxy_manager = self._reload_proxy_manager()
+        current_node = "🇯🇵 日本W03 | IEPL"
+        next_node = "🇰🇷 韩国W01"
+        proxy_url = "http://127.0.0.1:17890"
+
+        proxies_payload = {
+            "proxies": {
+                "节点选择": {
+                    "all": [current_node, next_node],
+                    "now": current_node,
+                }
+            }
+        }
+
+        with patch.object(proxy_manager, "ENABLE_NODE_SWITCH", True), \
+             patch.object(proxy_manager, "POOL_MODE", False), \
+             patch.object(proxy_manager, "FASTEST_MODE", False), \
+             patch.object(proxy_manager, "PROXY_GROUP_NAME", "节点选择"), \
+             patch.object(proxy_manager, "CLASH_API_URL", "http://127.0.0.1:19090"), \
+             patch.object(proxy_manager, "test_proxy_liveness", return_value=True), \
+             patch.object(proxy_manager.std_requests, "get", return_value=_FakeResponse(payload=proxies_payload)), \
+             patch.object(proxy_manager.std_requests, "put", return_value=_FakeResponse(status_code=204)) as put_mock, \
+             patch.object(proxy_manager.random, "choice", side_effect=lambda seq: seq[0]) as choice_mock:
+            self.assertTrue(proxy_manager.smart_switch_node(proxy_url))
+
+        choice_mock.assert_called_once_with([next_node])
+        self.assertEqual(
+            {"name": next_node},
+            put_mock.call_args.kwargs["json"],
+        )
+        self.assertEqual(next_node, proxy_manager.get_last_success_node_name(proxy_url))
+
+    def test_global_group_only_switches_leaf_proxies(self):
+        proxy_manager = self._reload_proxy_manager()
+        current_node = "🇯🇵 日本W10 | IEPL"
+        next_node = "🇰🇷 韩国W01"
+        nested_group = "🎮 Steam 登录/下载"
+        proxy_url = "http://127.0.0.1:17890"
+
+        proxies_payload = {
+            "proxies": {
+                "GLOBAL": {
+                    "all": ["DIRECT", current_node, nested_group, next_node],
+                    "now": current_node,
+                },
+                current_node: {"type": "Shadowsocks"},
+                next_node: {"type": "Shadowsocks"},
+                nested_group: {
+                    "type": "Selector",
+                    "all": ["DIRECT", "🔰 选择节点"],
+                    "now": "DIRECT",
+                },
+            }
+        }
+
+        with patch.object(proxy_manager, "ENABLE_NODE_SWITCH", True), \
+             patch.object(proxy_manager, "POOL_MODE", False), \
+             patch.object(proxy_manager, "FASTEST_MODE", False), \
+             patch.object(proxy_manager, "PROXY_GROUP_NAME", "GLOBAL"), \
+             patch.object(proxy_manager, "CLASH_API_URL", "http://127.0.0.1:19090"), \
+             patch.object(proxy_manager, "test_proxy_liveness", return_value=True), \
+             patch.object(proxy_manager.std_requests, "get", return_value=_FakeResponse(payload=proxies_payload)), \
+             patch.object(proxy_manager.std_requests, "put", return_value=_FakeResponse(status_code=204)) as put_mock, \
+             patch.object(proxy_manager.random, "choice", side_effect=lambda seq: seq[0]) as choice_mock:
+            self.assertTrue(proxy_manager.smart_switch_node(proxy_url))
+
+        choice_mock.assert_called_once_with([next_node])
+        self.assertEqual({"name": next_node}, put_mock.call_args.kwargs["json"])
+
 
 if __name__ == "__main__":
     unittest.main()
