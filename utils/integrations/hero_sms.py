@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from curl_cffi import requests
 from utils import db_manager
 from utils import config as cfg
+from utils import registration_history
 
 class UserStoppedError(Exception): pass
 def _ssl_verify() -> bool: return True
@@ -15,6 +16,57 @@ def _info(msg):
 
 def _warn(msg):
     print(f"[{cfg.ts()}] [INFO] {msg}")
+
+
+def _history_attempt_id(run_ctx: Optional[dict]) -> int:
+    if not isinstance(run_ctx, dict):
+        return 0
+    try:
+        return int(run_ctx.get("analytics_attempt_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _history_patch(run_ctx: Optional[dict], **fields: Any) -> None:
+    attempt_id = _history_attempt_id(run_ctx)
+    if attempt_id:
+        registration_history.patch_attempt(attempt_id, **fields)
+
+
+def _history_event(
+        run_ctx: Optional[dict],
+        *,
+        event_type: str,
+        phase: str = "",
+        ok_flag: Optional[bool] = None,
+        http_status: Optional[int] = None,
+        message: str = "",
+        snapshot: Any = None,
+) -> None:
+    attempt_id = _history_attempt_id(run_ctx)
+    if attempt_id:
+        registration_history.record_attempt_event(
+            attempt_id,
+            event_type=event_type,
+            phase=phase,
+            ok_flag=ok_flag,
+            http_status=http_status,
+            message=message,
+            snapshot=snapshot,
+        )
+
+
+def _history_increment(run_ctx: Optional[dict], field_name: str, delta: int = 1) -> int:
+    if not isinstance(run_ctx, dict):
+        return 0
+    metrics = run_ctx.get("analytics_metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+        run_ctx["analytics_metrics"] = metrics
+    current = int(metrics.get(field_name) or 0) + int(delta)
+    metrics[field_name] = current
+    _history_patch(run_ctx, **{field_name: current})
+    return current
 
 def _raise_if_stopped() -> None:
     if getattr(cfg, 'GLOBAL_STOP', False):
@@ -1250,6 +1302,22 @@ def _try_verify_phone_via_hero_sms(
 ) -> tuple[bool, str]:
     if not _hero_sms_enabled():
         return False, "HeroSMS 未配置 API Key 或HeroSMS主开关未开启，如果不想花钱接码请忽略该条提示"
+    started_monotonic = time.time()
+    if isinstance(run_ctx, dict):
+        run_ctx["phone_otp_entered"] = True
+    _history_patch(
+        run_ctx,
+        phone_otp_entered_flag=1,
+        phone_otp_provider="hero_sms",
+    )
+    _history_event(
+        run_ctx,
+        event_type="phone_otp_started",
+        phase="phone",
+        ok_flag=True,
+        message="hero_sms",
+        snapshot={"hint_url": hint_url},
+    )
 
     max_tries = _hero_sms_max_tries()
     last_reason = "HeroSMS 手机验证失败"
@@ -1304,6 +1372,16 @@ def _try_verify_phone_via_hero_sms(
             )
             if send_resp.status_code == 200:
                 _info(f"{source} 发送成功")
+                _history_increment(run_ctx, "phone_otp_send_count")
+                _history_event(
+                    run_ctx,
+                    event_type="phone_otp_started",
+                    phase="phone",
+                    ok_flag=True,
+                    http_status=send_resp.status_code,
+                    message=source,
+                    snapshot={"phone_number": phone_number},
+                )
                 try:
                     sj = send_resp.json()
                 except Exception:
@@ -1328,6 +1406,13 @@ def _try_verify_phone_via_hero_sms(
                 _warn(f"{source} {fail_reason}")
                 return False, "", fail_reason
             _info(f"{source} HeroSMS 收到手机验证码: {sms_code}")
+            _history_event(
+                run_ctx,
+                event_type="phone_otp_code_received",
+                phase="phone",
+                ok_flag=True,
+                message=source,
+            )
 
             verify_headers: Dict[str, str] = {
                 "referer": "https://auth.openai.com/phone-verification",
@@ -1352,6 +1437,22 @@ def _try_verify_phone_via_hero_sms(
                 fail_reason = f"手机验证码校验失败: HTTP {verify_resp.status_code}"
                 _warn(f"{source} {fail_reason} | {str(verify_resp.text or '')[:240]}")
                 return False, "", fail_reason
+            _history_increment(run_ctx, "phone_otp_validate_count")
+            if isinstance(run_ctx, dict):
+                run_ctx["phone_otp_success"] = True
+            _history_patch(
+                run_ctx,
+                phone_otp_success_flag=1,
+                phone_otp_provider="hero_sms",
+            )
+            _history_event(
+                run_ctx,
+                event_type="phone_otp_validated",
+                phase="phone",
+                ok_flag=True,
+                http_status=verify_resp.status_code,
+                message=source,
+            )
 
             if close_on_success:
                 _hero_sms_set_status(activation_id, 6, proxies)
@@ -1455,6 +1556,11 @@ def _try_verify_phone_via_hero_sms(
                         )
                     else:
                         _hero_sms_confirm_reuse_usage(reuse_id)
+                    _history_patch(
+                        run_ctx,
+                        phone_reuse_used_flag=1,
+                        phone_otp_country=str(country_id),
+                    )
                     return True, next_reuse
                 last_reason = reason_reuse or "复用手机号失败"
                 _hero_sms_country_record_result(country_id, False, last_reason)
@@ -1532,6 +1638,11 @@ def _try_verify_phone_via_hero_sms(
                         )
                     else:
                         _hero_sms_confirm_reuse_usage(activation_id)
+                _history_patch(
+                    run_ctx,
+                    phone_reuse_used_flag=1 if reuse_on else 0,
+                    phone_otp_country=str(country_id),
+                )
                 return True, next_new
             last_reason = reason_new or "手机验证失败"
             _hero_sms_country_record_result(country_id, False, last_reason)
@@ -1562,6 +1673,8 @@ def _try_verify_phone_via_hero_sms(
 
         return False, last_reason
     finally:
+        elapsed_ms = max(0, int(round((time.time() - started_monotonic) * 1000)))
+        _history_patch(run_ctx, phone_otp_duration_ms=elapsed_ms)
         try:
             verify_balance_end, _ = hero_sms_get_balance(proxies)
             if verify_balance_end >= 0:

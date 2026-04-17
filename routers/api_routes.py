@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Any
 from cloudflare import Cloudflare
 from utils import core_engine, db_manager
+from utils import registration_history
 from utils.config import reload_all_configs
 try:
     from utils.integrations.sub2api_client import Sub2APIClient, build_default_model_mapping as _build_default_sub2api_model_mapping
@@ -105,6 +106,19 @@ class ExtResultReq(BaseModel):
     code_verifier: Optional[str] = ""
     expected_state: Optional[str] = ""
     error_type: Optional[str] = "failed"
+    started_at: Optional[str] = ""
+    finished_at: Optional[str] = ""
+    proxy_name: Optional[str] = ""
+    exit_ip: Optional[str] = ""
+    geo_country_name: Optional[str] = ""
+    flow_type: Optional[str] = "extension"
+    worker_id: Optional[str] = ""
+    phone_gate_hit: Optional[bool] = False
+    phone_otp_entered: Optional[bool] = False
+    phone_otp_success: Optional[bool] = False
+    failure_stage: Optional[str] = ""
+    http_status: Optional[int] = None
+    events: Optional[list[Any]] = None
 
 class ImportMailboxReq(BaseModel):
     raw_text: str
@@ -249,6 +263,18 @@ async def start_task(token: str = Depends(verify_token)):
     default_proxy = getattr(core_engine.cfg, 'DEFAULT_PROXY', None)
     args = DummyArgs(proxy=default_proxy if default_proxy else None)
     core_engine.run_stats.update({"success": 0, "failed": 0, "retries": 0, "pwd_blocked": 0, "phone_verify": 0, "start_time": time.time()})
+    analytics_mode = "cpa" if getattr(core_engine.cfg, 'ENABLE_CPA_MODE', False) else (
+        "sub2api" if getattr(core_engine.cfg, 'ENABLE_SUB2API_MODE', False) else "normal"
+    )
+    core_engine.run_stats["analytics_run_id"] = registration_history.start_run(
+        source_mode=analytics_mode,
+        target_count=getattr(core_engine.cfg, 'NORMAL_TARGET_COUNT', 0),
+        trigger_source="api_start",
+        config_snapshot={
+            "email_api_mode": getattr(core_engine.cfg, "EMAIL_API_MODE", ""),
+            "reg_mode": getattr(core_engine.cfg, "REG_MODE", "protocol"),
+        },
+    )
     if getattr(core_engine.cfg, 'ENABLE_CPA_MODE', False):
         core_engine.run_stats["target"] = 0
         engine.start_cpa(args)
@@ -284,6 +310,16 @@ async def stop_task(token: str = Depends(verify_token)):
 
     asyncio.create_task(send_tg_msg_async(msg))
     engine.stop()
+    analytics_run_id = int(core_engine.run_stats.get("analytics_run_id") or 0)
+    if analytics_run_id:
+        registration_history.finish_run(
+            analytics_run_id,
+            notes={
+                "success": stats.get("success", 0),
+                "failed": stats.get("failed", 0),
+                "retries": stats.get("retries", 0),
+            },
+        )
     return {"status": "success", "message": "已发送停止指令，正在安全退出..."}
 
 
@@ -326,6 +362,118 @@ async def get_stats(token: str = Depends(verify_token)):
         "success_rate": f"{success_rate}%", "elapsed": f"{elapsed}s", "avg_time": f"{avg_time}s",
         "progress_pct": f"{progress_pct}%", "is_running": is_running, "mode": current_mode
     }
+
+
+@router.get("/api/analytics/overview")
+async def get_analytics_overview(
+        started_from: Optional[str] = Query(None),
+        started_to: Optional[str] = Query(None),
+        source_mode: Optional[str] = Query(None),
+        proxy_name: Optional[str] = Query(None),
+        geo_country_name: Optional[str] = Query(None),
+        email_domain: Optional[str] = Query(None),
+        token: str = Depends(verify_token),
+):
+    filters = {
+        "started_from": started_from,
+        "started_to": started_to,
+        "source_mode": source_mode,
+        "proxy_name": proxy_name,
+        "geo_country_name": geo_country_name,
+        "email_domain": email_domain,
+    }
+    return {"status": "success", "data": registration_history.get_overview(filters)}
+
+
+@router.get("/api/analytics/distribution")
+async def get_analytics_distribution(
+        group_by: str = Query("geo_country_name"),
+        started_from: Optional[str] = Query(None),
+        started_to: Optional[str] = Query(None),
+        source_mode: Optional[str] = Query(None),
+        token: str = Depends(verify_token),
+):
+    filters = {
+        "group_by": group_by,
+        "started_from": started_from,
+        "started_to": started_to,
+        "source_mode": source_mode,
+    }
+    return {"status": "success", "data": registration_history.get_distribution(filters)}
+
+
+@router.get("/api/analytics/attempts")
+async def get_analytics_attempts(
+        page: int = Query(1),
+        page_size: int = Query(50),
+        started_from: Optional[str] = Query(None),
+        started_to: Optional[str] = Query(None),
+        source_mode: Optional[str] = Query(None),
+        final_status: Optional[str] = Query(None),
+        proxy_name: Optional[str] = Query(None),
+        geo_country_name: Optional[str] = Query(None),
+        email_domain: Optional[str] = Query(None),
+        success_flag: Optional[bool] = Query(None),
+        phone_gate_hit_flag: Optional[bool] = Query(None),
+        phone_otp_entered_flag: Optional[bool] = Query(None),
+        token: str = Depends(verify_token),
+):
+    filters = {
+        "started_from": started_from,
+        "started_to": started_to,
+        "source_mode": source_mode,
+        "final_status": final_status,
+        "proxy_name": proxy_name,
+        "geo_country_name": geo_country_name,
+        "email_domain": email_domain,
+        "success_flag": success_flag,
+        "phone_gate_hit_flag": phone_gate_hit_flag,
+        "phone_otp_entered_flag": phone_otp_entered_flag,
+    }
+    return {"status": "success", "data": registration_history.list_attempts(filters, page=page, page_size=page_size)}
+
+
+@router.get("/api/analytics/attempt-events")
+async def get_analytics_attempt_events(
+        attempt_id: int,
+        token: str = Depends(verify_token),
+):
+    return {"status": "success", "data": registration_history.list_attempt_events(attempt_id)}
+
+
+@router.get("/api/analytics/export")
+async def export_analytics_attempts(
+        export_format: str = Query("json"),
+        started_from: Optional[str] = Query(None),
+        started_to: Optional[str] = Query(None),
+        source_mode: Optional[str] = Query(None),
+        final_status: Optional[str] = Query(None),
+        proxy_name: Optional[str] = Query(None),
+        geo_country_name: Optional[str] = Query(None),
+        email_domain: Optional[str] = Query(None),
+        success_flag: Optional[bool] = Query(None),
+        phone_otp_entered_flag: Optional[bool] = Query(None),
+        token: str = Depends(verify_token),
+):
+    filters = {
+        "started_from": started_from,
+        "started_to": started_to,
+        "source_mode": source_mode,
+        "final_status": final_status,
+        "proxy_name": proxy_name,
+        "geo_country_name": geo_country_name,
+        "email_domain": email_domain,
+        "success_flag": success_flag,
+        "phone_otp_entered_flag": phone_otp_entered_flag,
+    }
+    body = registration_history.export_attempts(filters, export_format=export_format)
+    media_type = "text/csv; charset=utf-8" if str(export_format).lower() == "csv" else "application/json; charset=utf-8"
+    filename = f"registration_attempts.{ 'csv' if str(export_format).lower() == 'csv' else 'json'}"
+    return StreamingResponse(
+        iter([body.encode("utf-8")]),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/api/start_check")
@@ -1022,6 +1170,10 @@ def ext_submit_result(req: ExtResultReq, token: str = Depends(verify_token)):
                 return {"status": "error", "message": "Token 换取失败"}
         db_manager.save_account_to_db(req.email, req.password, token_json)
         core_engine.run_stats['success'] = core_engine.run_stats.get('success', 0) + 1
+        registration_history.record_extension_result(
+            req,
+            run_id=int(core_engine.run_stats.get("analytics_run_id") or 0),
+        )
 
         return {"status": "success", "message": "战利品已入库"}
     else:
@@ -1032,6 +1184,10 @@ def ext_submit_result(req: ExtResultReq, token: str = Depends(verify_token)):
             is_dead_account = True
         elif req.error_type == 'pwd_blocked':
             core_engine.run_stats['pwd_blocked'] = core_engine.run_stats.get('pwd_blocked', 0) + 1
+        registration_history.record_extension_result(
+            req,
+            run_id=int(core_engine.run_stats.get("analytics_run_id") or 0),
+        )
         if is_dead_account and getattr(cfg, "EMAIL_API_MODE", "") == "local_microsoft" and req.email:
             db_manager.update_local_mailbox_status(req.email, 3)
             print(f"[{cfg.ts()}] [WARNING] 插件上报邮箱不可用，已将邮箱标记为死号: {req.email}")
@@ -1067,12 +1223,30 @@ def ext_reset_stats(token: str = Depends(verify_token)):
         "target": getattr(core_engine.cfg, 'NORMAL_TARGET_COUNT', 0),
         "ext_is_running": True
     })
+    core_engine.run_stats["analytics_run_id"] = registration_history.start_run(
+        source_mode="extension",
+        target_count=getattr(core_engine.cfg, 'NORMAL_TARGET_COUNT', 0),
+        trigger_source="ext_reset_stats",
+        config_snapshot={
+            "reg_mode": getattr(core_engine.cfg, "REG_MODE", "extension"),
+            "email_api_mode": getattr(core_engine.cfg, "EMAIL_API_MODE", ""),
+        },
+    )
     return {"status": "success"}
 
 @router.post("/api/ext/stop")
 def ext_stop(token: str = Depends(verify_token)):
     from utils import core_engine
     core_engine.run_stats["ext_is_running"] = False
+    analytics_run_id = int(core_engine.run_stats.get("analytics_run_id") or 0)
+    if analytics_run_id:
+        registration_history.finish_run(
+            analytics_run_id,
+            notes={
+                "success": core_engine.run_stats.get("success", 0),
+                "failed": core_engine.run_stats.get("failed", 0),
+            },
+        )
     return {"status": "success"}
 
 @router.get("/api/mailboxes")

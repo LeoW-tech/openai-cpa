@@ -626,23 +626,122 @@ def _extract_mail_fields(mail: dict) -> dict:
 
 
 OTP_CODE_PATTERN = r"(?<!\d)(\d{6})(?!\d)"
+OTP_SEMANTIC_PATTERNS = [
+    ("chatgpt_code", re.compile(r"(?i)\b(?:your\s+)?chatgpt code is\b[^\d]{0,48}(\d{6})")),
+    ("openai_code", re.compile(r"(?i)\b(?:your\s+)?openai code is\b[^\d]{0,48}(\d{6})")),
+    (
+        "temporary_verification_code",
+        re.compile(r"(?i)\btemporary verification code\b[^\d]{0,96}(\d{6})"),
+    ),
+    (
+        "verification_code_to_continue",
+        re.compile(r"(?i)\bverification code to continue\b[^\d]{0,96}(\d{6})"),
+    ),
+    ("temporary_login_code", re.compile(r"(?i)\btemporary openai login code\b[^\d]{0,96}(\d{6})")),
+    ("login_code", re.compile(r"(?i)\blog(?:-|\s)?in code\b[^\d]{0,96}(\d{6})")),
+    ("generic_code_is", re.compile(r"(?i)\bcode is\b[^\d]{0,48}(\d{6})")),
+]
+
+
+def _sanitize_email_visible_text(content: str) -> str:
+    if not content:
+        return ""
+    visible = unescape(content)
+    visible = re.sub(r"(?is)<(script|style)\b[^>]*>.*?</\1>", " ", visible)
+    visible = re.sub(r"(?i)\bhttps?://[^\s\"'<>]+", " ", visible)
+    visible = re.sub(r"(?i)#[0-9a-f]{6}\b", " ", visible)
+    visible = re.sub(r"(?is)<[^>]+>", " ", visible)
+    visible = re.sub(r"(?i)\b[a-z0-9_]{2,}=[^\s\"'<>]+", " ", visible)
+    visible = re.sub(r"\s+", " ", visible)
+    return visible.strip()
+
+
+def _collect_semantic_otp_candidates(content: str, source: str) -> list[dict[str, Any]]:
+    candidates = []
+    for label, pattern in OTP_SEMANTIC_PATTERNS:
+        for match in pattern.finditer(content):
+            candidates.append(
+                {
+                    "code": match.group(1),
+                    "source": source,
+                    "match_type": label,
+                    "position": match.start(),
+                }
+            )
+    return candidates
+
+
+def _collect_fallback_otp_candidates(content: str, source: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "code": match.group(1),
+            "source": source,
+            "match_type": "fallback",
+            "position": match.start(),
+        }
+        for match in re.finditer(OTP_CODE_PATTERN, content)
+    ]
+
+
+def _log_otp_candidates(candidates: list[dict[str, Any]], chosen: dict[str, Any], log_label: str) -> None:
+    if not log_label or not chosen:
+        return
+    unique_candidates = []
+    seen = set()
+    for item in candidates:
+        key = (item["code"], item["source"], item["match_type"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_candidates.append(f"{item['source']}:{item['match_type']}={item['code']}")
+    if len(unique_candidates) <= 1:
+        return
+    joined = ", ".join(unique_candidates[:6])
+    print(
+        f"[{cfg.ts()}] [DEBUG] OTP候选({log_label}): {joined} | 采用 {chosen['source']}:{chosen['match_type']}={chosen['code']}",
+        flush=True,
+    )
+
+
+def _extract_otp_code_from_email_parts(
+    *,
+    subject: str = "",
+    body_preview: str = "",
+    body_html: str = "",
+    log_label: str = "",
+) -> str:
+    sources = [
+        ("subject", _sanitize_email_visible_text(subject)),
+        ("bodyPreview", _sanitize_email_visible_text(body_preview)),
+        ("body", _sanitize_email_visible_text(body_html)),
+    ]
+    all_candidates = []
+
+    for source_name, content in sources:
+        if not content:
+            continue
+        semantic_candidates = _collect_semantic_otp_candidates(content, source_name)
+        all_candidates.extend(semantic_candidates)
+        if semantic_candidates:
+            chosen = semantic_candidates[0]
+            _log_otp_candidates(all_candidates, chosen, log_label)
+            return chosen["code"]
+
+    for source_name, content in sources:
+        if not content:
+            continue
+        fallback_candidates = _collect_fallback_otp_candidates(content, source_name)
+        all_candidates.extend(fallback_candidates)
+        if fallback_candidates:
+            chosen = fallback_candidates[0]
+            _log_otp_candidates(all_candidates, chosen, log_label)
+            return chosen["code"]
+
+    return ""
 
 
 def _extract_otp_code(content: str) -> str:
-    if not content:
-        return ""
-    patterns = [
-        r"(?i)Your ChatGPT code is\s*(\d{6})",
-        r"(?i)ChatGPT code is\s*(\d{6})",
-        r"(?i)verification code to continue:\s*(\d{6})",
-        r"(?i)Subject:.*?(\d{6})",
-    ]
-    for p in patterns:
-        m = re.search(p, content)
-        if m:
-            return m.group(1)
-    fallback = re.search(r"(?<!\d)(\d{6})(?!\d)", content)
-    return fallback.group(1) if fallback else ""
+    return _extract_otp_code_from_email_parts(body_html=content)
 
 
 def _create_imap_conn(proxy_str=None):
@@ -673,7 +772,6 @@ def _poll_local_ms_for_oai_code_graph(
     excluded_ids = excluded_ids or set()
     processed_mail_ids = set() if processed_mail_ids is None else processed_mail_ids
     tgt = target_email.lower().strip()
-    master_email = tgt.split('+')[0] + '@' + tgt.split('@')[1] if '+' in tgt else tgt
     assigned_at = float(mailbox_dict.get("assigned_at") or time.time())
     assigned_floor_ts = assigned_at - 60
     graph_state = _get_local_microsoft_mail_state(mail_state, tgt)
@@ -707,14 +805,28 @@ def _poll_local_ms_for_oai_code_graph(
                 recipients = [str(r.get('emailAddress', {}).get('address', '')).lower().strip()
                               for r in msg.get('toRecipients', [])]
                 body_content = msg.get('body', {}).get('content', '')
-                subject = msg.get('subject', '').lower()
+                body_preview = msg.get('bodyPreview', '')
+                subject = msg.get('subject', '')
+                subject_lower = subject.lower()
+                body_lower = body_content.lower()
+                body_preview_lower = body_preview.lower()
 
-                is_hit = (tgt in recipients) or (f"to: {tgt}" in body_content.lower()) or (tgt in body_content.lower())
-                if not is_hit and master_email in recipients and (time.time() - received_ts < 30):
-                    is_hit = True
+                is_hit = (
+                    (tgt in recipients)
+                    or (f"to: {tgt}" in body_lower)
+                    or (tgt in body_lower)
+                    or (f"to: {tgt}" in body_preview_lower)
+                    or (tgt in body_preview_lower)
+                    or (tgt in subject_lower)
+                )
 
                 if is_hit:
-                    code = _extract_otp_code(f"{subject}\n{body_content}")
+                    code = _extract_otp_code_from_email_parts(
+                        subject=subject,
+                        body_preview=body_preview,
+                        body_html=body_content,
+                        log_label=mask_email(tgt),
+                    )
                     if code:
                         processed_mail_ids.add(msg_id)
                         if graph_state is not None:

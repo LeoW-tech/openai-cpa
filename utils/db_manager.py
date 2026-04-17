@@ -135,11 +135,144 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        execute_sql(c, '''
+            CREATE TABLE IF NOT EXISTS registration_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_mode TEXT,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                ended_at TIMESTAMP,
+                target_count INTEGER DEFAULT 0,
+                config_snapshot_json TEXT,
+                trigger_source TEXT,
+                host_name TEXT,
+                worker_id TEXT,
+                notes_json TEXT
+            )
+        ''')
+        execute_sql(c, '''
+            CREATE TABLE IF NOT EXISTS registration_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER,
+                task_id TEXT,
+                worker_id TEXT,
+                source_mode TEXT,
+                attempt_no INTEGER DEFAULT 1,
+                flow_type TEXT,
+                legacy_backfill INTEGER DEFAULT 0,
+                linked_account_email TEXT,
+                linked_account_created_at TIMESTAMP,
+                email_full TEXT,
+                email_local_part TEXT,
+                email_domain TEXT,
+                master_email TEXT,
+                email_provider_type TEXT,
+                email_provider_detail TEXT,
+                proxy_url TEXT,
+                proxy_name TEXT,
+                exit_ip TEXT,
+                geo_country_code TEXT,
+                geo_country_name TEXT,
+                geo_region_name TEXT,
+                geo_city_name TEXT,
+                geo_isp TEXT,
+                geo_asn TEXT,
+                geo_source TEXT,
+                geo_status TEXT,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                finished_at TIMESTAMP,
+                total_duration_ms INTEGER,
+                email_otp_duration_ms INTEGER,
+                phone_otp_duration_ms INTEGER,
+                oauth_duration_ms INTEGER,
+                account_create_duration_ms INTEGER,
+                callback_duration_ms INTEGER,
+                final_status TEXT,
+                success_flag INTEGER DEFAULT 0,
+                retry_403_flag INTEGER DEFAULT 0,
+                signup_blocked_flag INTEGER DEFAULT 0,
+                pwd_blocked_flag INTEGER DEFAULT 0,
+                phone_gate_hit_flag INTEGER DEFAULT 0,
+                phone_otp_entered_flag INTEGER DEFAULT 0,
+                phone_otp_success_flag INTEGER DEFAULT 0,
+                email_otp_send_count INTEGER DEFAULT 0,
+                email_otp_resend_count INTEGER DEFAULT 0,
+                email_otp_validate_count INTEGER DEFAULT 0,
+                email_otp_401_retry_count INTEGER DEFAULT 0,
+                phone_otp_send_count INTEGER DEFAULT 0,
+                phone_otp_validate_count INTEGER DEFAULT 0,
+                phone_otp_provider TEXT,
+                phone_otp_country TEXT,
+                phone_reuse_used_flag INTEGER DEFAULT 0,
+                local_save_ok INTEGER DEFAULT 0,
+                cpa_upload_ok INTEGER DEFAULT 0,
+                sub2api_push_ok INTEGER DEFAULT 0,
+                failure_stage TEXT,
+                failure_code TEXT,
+                failure_message TEXT,
+                last_continue_url TEXT,
+                last_http_status INTEGER,
+                labels_json TEXT,
+                metrics_json TEXT,
+                result_snapshot_json TEXT
+            )
+        ''')
+        execute_sql(c, '''
+            CREATE TABLE IF NOT EXISTS registration_attempt_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attempt_id INTEGER,
+                seq_no INTEGER DEFAULT 0,
+                event_type TEXT,
+                phase TEXT,
+                occurred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                elapsed_ms INTEGER,
+                ok_flag INTEGER,
+                http_status INTEGER,
+                reason_code TEXT,
+                message TEXT,
+                url_key TEXT,
+                snapshot_json TEXT
+            )
+        ''')
+        execute_sql(c, '''
+            CREATE TABLE IF NOT EXISTS ip_geo_cache (
+                ip TEXT PRIMARY KEY,
+                resolved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                country_code TEXT,
+                country_name TEXT,
+                region_name TEXT,
+                city_name TEXT,
+                isp TEXT,
+                asn TEXT,
+                source TEXT,
+                raw_json TEXT,
+                status TEXT
+            )
+        ''')
         try:
             execute_sql(c, 'ALTER TABLE local_mailboxes ADD COLUMN fission_count INTEGER DEFAULT 0;')
             execute_sql(c, 'ALTER TABLE local_mailboxes ADD COLUMN retry_master INTEGER DEFAULT 0;')
         except Exception:
             pass
+        for index_sql in (
+            'CREATE INDEX IF NOT EXISTS idx_registration_runs_started_at ON registration_runs(started_at)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_started_at ON registration_attempts(started_at)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_final_status ON registration_attempts(final_status)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_success_flag ON registration_attempts(success_flag)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_phone_otp_entered ON registration_attempts(phone_otp_entered_flag)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_proxy_name ON registration_attempts(proxy_name)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_exit_ip ON registration_attempts(exit_ip)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_geo_country_name ON registration_attempts(geo_country_name)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_email_domain ON registration_attempts(email_domain)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_source_mode ON registration_attempts(source_mode)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_task_id ON registration_attempts(task_id)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_run_id ON registration_attempts(run_id)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempt_events_attempt_seq ON registration_attempt_events(attempt_id, seq_no)',
+        ):
+            try:
+                execute_sql(c, index_sql)
+            except Exception:
+                pass
     print(f"[{ts()}] [系统] 数据库模块初始化完成 (引擎: {DB_TYPE.upper()})")
 
 

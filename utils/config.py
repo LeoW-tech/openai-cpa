@@ -199,6 +199,14 @@ TMAILOR_CURRENT_TOKEN: str = ""
 REG_MODE: str = "protocol"
 DB_TYPE: str = "sqlite"
 MYSQL_CFG: dict = {}
+ANALYTICS_ENABLED: bool = True
+ANALYTICS_CAPTURE_EVENTS: bool = True
+ANALYTICS_CAPTURE_IP_GEO: bool = True
+ANALYTICS_GEO_CACHE_TTL_HOURS: int = 168
+ANALYTICS_PUBLIC_IP_PROBE_TIMEOUT_SEC: int = 8
+ANALYTICS_GEO_LOOKUP_TIMEOUT_SEC: int = 8
+ANALYTICS_EXPORT_MAX_ROWS: int = 5000
+ANALYTICS_SNAPSHOT_MAX_BYTES: int = 4096
 
 def reload_all_configs(new_config_dict=None):
     global _c
@@ -244,11 +252,15 @@ def reload_all_configs(new_config_dict=None):
     global LOCAL_MS_ENABLE_FISSION, LOCAL_MS_MASTER_EMAIL, LOCAL_MS_PASSWORD, LOCAL_MS_CLIENT_ID, LOCAL_MS_REFRESH_TOKEN, LOCAL_MS_POOL_FISSION
     global DB_TYPE, MYSQL_CFG
     global MAX_LOG_LINES
+    global ANALYTICS_ENABLED, ANALYTICS_CAPTURE_EVENTS, ANALYTICS_CAPTURE_IP_GEO
+    global ANALYTICS_GEO_CACHE_TTL_HOURS, ANALYTICS_PUBLIC_IP_PROBE_TIMEOUT_SEC
+    global ANALYTICS_GEO_LOOKUP_TIMEOUT_SEC, ANALYTICS_EXPORT_MAX_ROWS, ANALYTICS_SNAPSHOT_MAX_BYTES
 
     base_yaml_config = init_config()
 
     _db_conf = base_yaml_config.get("database", {})
     _mysql_conf = _db_conf.get("mysql", {})
+    _analytics_conf = base_yaml_config.get("analytics", {})
 
     DB_TYPE = os.getenv("DB_TYPE", str(_db_conf.get("type", "sqlite"))).strip().lower()
 
@@ -259,6 +271,14 @@ def reload_all_configs(new_config_dict=None):
         "password": os.getenv("DB_PASS", _mysql_conf.get("password", "")),
         "db_name": os.getenv("DB_NAME", _mysql_conf.get("db_name", "wenfxl_manager"))
     }
+    ANALYTICS_ENABLED = bool(_analytics_conf.get("enabled", True))
+    ANALYTICS_CAPTURE_EVENTS = bool(_analytics_conf.get("capture_events", True))
+    ANALYTICS_CAPTURE_IP_GEO = bool(_analytics_conf.get("capture_ip_geo", True))
+    ANALYTICS_GEO_CACHE_TTL_HOURS = max(1, int(_analytics_conf.get("geo_cache_ttl_hours", 24 * 7)))
+    ANALYTICS_PUBLIC_IP_PROBE_TIMEOUT_SEC = max(1, int(_analytics_conf.get("public_ip_probe_timeout_sec", 8)))
+    ANALYTICS_GEO_LOOKUP_TIMEOUT_SEC = max(1, int(_analytics_conf.get("geo_lookup_timeout_sec", 8)))
+    ANALYTICS_EXPORT_MAX_ROWS = max(1, int(_analytics_conf.get("export_max_rows", 5000)))
+    ANALYTICS_SNAPSHOT_MAX_BYTES = max(256, int(_analytics_conf.get("snapshot_max_bytes", 4096)))
 
     base_yaml_config["database"] = {"type": DB_TYPE, "mysql": MYSQL_CFG}
     is_cloud_db = (DB_TYPE == "mysql")

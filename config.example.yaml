@@ -276,6 +276,17 @@ database:
     password: ""
     db_name: "wenfxl_manager"
 
+# 注册历史分析层
+analytics:
+  enabled: true
+  capture_events: true
+  capture_ip_geo: true
+  geo_cache_ttl_hours: 168
+  public_ip_probe_timeout_sec: 8
+  geo_lookup_timeout_sec: 8
+  export_max_rows: 5000
+  snapshot_max_bytes: 4096
+
 # WEB端密码
 web_password: admin
 #CF账号

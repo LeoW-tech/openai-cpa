@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from curl_cffi import requests
 from utils import config as cfg
+from utils import registration_history
 from utils.email_providers import mail_service as _mail_service
 from utils.integrations.hero_sms import _try_verify_phone_via_hero_sms
 from utils.auth_core import generate_payload
@@ -136,6 +137,110 @@ def _to_int(v: Any) -> int:
         return 0
 
 
+def _analytics_attempt_id(run_ctx: Optional[dict]) -> int:
+    if not isinstance(run_ctx, dict):
+        return 0
+    try:
+        return int(run_ctx.get("analytics_attempt_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _analytics_metrics(run_ctx: Optional[dict]) -> dict:
+    if not isinstance(run_ctx, dict):
+        return {}
+    metrics = run_ctx.get("analytics_metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+        run_ctx["analytics_metrics"] = metrics
+    return metrics
+
+
+def _history_event(
+        run_ctx: Optional[dict],
+        *,
+        event_type: str,
+        phase: str = "",
+        ok_flag: Optional[bool] = None,
+        http_status: Optional[int] = None,
+        reason_code: str = "",
+        message: str = "",
+        url_key: str = "",
+        snapshot: Any = None,
+) -> None:
+    attempt_id = _analytics_attempt_id(run_ctx)
+    if not attempt_id:
+        return
+    registration_history.record_attempt_event(
+        attempt_id,
+        event_type=event_type,
+        phase=phase,
+        ok_flag=ok_flag,
+        http_status=http_status,
+        reason_code=reason_code,
+        message=message,
+        url_key=url_key,
+        snapshot=snapshot,
+    )
+
+
+def _history_patch(run_ctx: Optional[dict], **fields: Any) -> None:
+    attempt_id = _analytics_attempt_id(run_ctx)
+    if not attempt_id:
+        return
+    registration_history.patch_attempt(attempt_id, **fields)
+
+
+def _set_failure(
+        run_ctx: Optional[dict],
+        *,
+        stage: str,
+        message: str = "",
+        code: str = "",
+        http_status: Optional[int] = None,
+        continue_url: str = "",
+) -> None:
+    if not isinstance(run_ctx, dict):
+        return
+    run_ctx["failure_stage"] = str(stage or "").strip()
+    if message:
+        run_ctx["failure_message"] = str(message)
+    if code:
+        run_ctx["failure_code"] = str(code)
+    if http_status not in (None, ""):
+        run_ctx["last_http_status"] = int(http_status)
+    if continue_url:
+        run_ctx["last_continue_url"] = str(continue_url)
+
+
+def _increment_counter(
+        run_ctx: Optional[dict],
+        field_name: str,
+        *,
+        delta: int = 1,
+        event_type: str = "",
+        phase: str = "",
+        message: str = "",
+        http_status: Optional[int] = None,
+        snapshot: Any = None,
+) -> int:
+    metrics = _analytics_metrics(run_ctx)
+    current = int(metrics.get(field_name) or 0) + int(delta)
+    metrics[field_name] = current
+    _history_patch(run_ctx, **{field_name: current})
+    if event_type:
+        _history_event(
+            run_ctx,
+            event_type=event_type,
+            phase=phase,
+            ok_flag=True,
+            http_status=http_status,
+            message=message or field_name,
+            snapshot=snapshot,
+        )
+    return current
+
+
 def _post_form(
         url: str,
         data: Dict[str, str],
@@ -242,7 +347,17 @@ def _validate_email_otp_with_401_backoff(
         proxies: Any = None,
         label: str = "验证码",
         sentinel_flow: str = "authorize_continue",
+        run_ctx: Optional[dict] = None,
 ) -> Any:
+    _increment_counter(
+        run_ctx,
+        "email_otp_validate_count",
+        event_type="email_otp_validated",
+        phase="email_otp",
+        message=label,
+        snapshot={"stage": "submit"},
+    )
+
     def _submit_otp(otp_code: str) -> Any:
         sentinel_otp = generate_payload(
             did=did,
@@ -275,6 +390,7 @@ def _validate_email_otp_with_401_backoff(
     for retry_index, wait_seconds in enumerate((10, 20, 30), start=1):
         if getattr(cfg, 'GLOBAL_STOP', False):
             return last_response
+        _increment_counter(run_ctx, "email_otp_401_retry_count")
 
         print(
             f"[{cfg.ts()}] [INFO] （{masked_email}）{label} 第 {retry_index}/3 次退避补救，"
@@ -306,6 +422,82 @@ def _validate_email_otp_with_401_backoff(
             return last_response
 
     return last_response
+
+
+def _create_account_with_history(
+        *,
+        session: requests.Session,
+        headers: dict,
+        user_info: dict,
+        proxies: Any,
+        run_ctx: Optional[dict] = None,
+) -> Any:
+    started = time.time()
+    _history_event(
+        run_ctx,
+        event_type="account_create_started",
+        phase="account_create",
+        ok_flag=True,
+        snapshot={"birthdate": user_info.get("birthdate"), "name": user_info.get("name")},
+    )
+    resp = _post_with_retry(
+        session,
+        "https://auth.openai.com/api/accounts/create_account",
+        headers=headers,
+        json_body=user_info,
+        proxies=proxies,
+    )
+    elapsed_ms = max(0, int(round((time.time() - started) * 1000)))
+    _history_patch(run_ctx, account_create_duration_ms=elapsed_ms)
+    _history_event(
+        run_ctx,
+        event_type="account_create_completed",
+        phase="account_create",
+        ok_flag=(resp.status_code == 200),
+        http_status=resp.status_code,
+        snapshot={"duration_ms": elapsed_ms},
+    )
+    return resp
+
+
+def _submit_callback_with_history(
+        *,
+        callback_url: str,
+        expected_state: str,
+        code_verifier: str,
+        redirect_uri: str = DEFAULT_REDIRECT_URI,
+        proxies: Any = None,
+        run_ctx: Optional[dict] = None,
+) -> str:
+    started = time.time()
+    _history_event(
+        run_ctx,
+        event_type="oauth_callback_submitted",
+        phase="oauth",
+        ok_flag=True,
+        url_key=callback_url,
+    )
+    token_json = submit_callback_url(
+        callback_url=callback_url,
+        expected_state=expected_state,
+        code_verifier=code_verifier,
+        redirect_uri=redirect_uri,
+        proxies=proxies,
+    )
+    elapsed_ms = max(0, int(round((time.time() - started) * 1000)))
+    _history_patch(run_ctx, callback_duration_ms=elapsed_ms)
+    try:
+        payload = json.loads(token_json or "{}")
+    except Exception:
+        payload = {}
+    _history_event(
+        run_ctx,
+        event_type="token_received",
+        phase="oauth",
+        ok_flag=True,
+        snapshot={"duration_ms": elapsed_ms, "email": payload.get("email")},
+    )
+    return token_json
 
 
 _cached_browser_token = None
@@ -513,16 +705,57 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                 )
                 elapsed = time.time() - start
                 loc = (re.search(r"^loc=(.+)$", res.text, re.MULTILINE) or [None, None])[1]
+                ip = (re.search(r"^ip=(.+)$", res.text, re.MULTILINE) or [None, None])[1]
                 if is_openai_region_blocked(loc):
                     raise RuntimeError(f"当前{proxies}代理所在地不支持 OpenAI ({loc})")
                 print(f"[{cfg.ts()}] [INFO] 节点测活成功！地区: {loc} | 延迟: {elapsed:.2f}s")
+                if ip:
+                    geo = registration_history.lookup_geo_for_ip(ip, country_code_hint=loc or "")
+                    _history_patch(
+                        run_ctx,
+                        exit_ip=ip,
+                        geo_country_code=geo.get("country_code") or loc or "",
+                        geo_country_name=geo.get("country_name") or "",
+                        geo_region_name=geo.get("region_name") or "",
+                        geo_city_name=geo.get("city_name") or "",
+                        geo_isp=geo.get("isp") or "",
+                        geo_asn=geo.get("asn") or "",
+                        geo_source=geo.get("source") or "cloudflare-trace",
+                        geo_status=geo.get("status") or "ok",
+                    )
+                    _history_event(
+                        run_ctx,
+                        event_type="exit_ip_resolved",
+                        phase="network",
+                        ok_flag=True,
+                        message=ip,
+                        snapshot={"country_code": loc, "latency_sec": round(elapsed, 3)},
+                    )
             except Exception as e:
                 print(f"[{cfg.ts()}] [ERROR] 代理网络检查失败: {e}")
+                _set_failure(run_ctx, stage="net_check", message=str(e))
                 return None, None
 
         email, email_jwt = get_email_and_token(proxies)
         if not email:
+            _set_failure(run_ctx, stage="email_acquire", message="email acquire failed")
             return None, None
+        _history_patch(
+            run_ctx,
+            email_full=email,
+            email_local_part=_split_email(email)[0],
+            email_domain=_split_email(email)[1],
+            master_email=_derive_master_email(email),
+            email_provider_type=str(getattr(cfg, "EMAIL_API_MODE", "") or ""),
+            email_provider_detail="protocol",
+        )
+        _history_event(
+            run_ctx,
+            event_type="email_acquired",
+            phase="email",
+            ok_flag=True,
+            message=email,
+        )
 
         password = _generate_password()
         print(f"[{cfg.ts()}] [INFO] 提交注册信息 (密码: {password[:4]}****)")
@@ -611,9 +844,18 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             "https://auth.openai.com/api/accounts/passwordless/send-otp",
                             headers=login_send_headers, proxies=proxies, timeout=30,
                         )
+                        _increment_counter(
+                            run_ctx,
+                            "email_otp_send_count",
+                            event_type="email_otp_sent",
+                            phase="email_otp",
+                            message="接管验证码发送",
+                            http_status=sentinel_login_resp.status_code,
+                        )
 
                         if sentinel_login_resp.status_code != 200:
                             print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）邮件发送异常, 返回: {sentinel_login_resp.status_code}")
+                            _set_failure(run_ctx, stage="takeover_send_otp", http_status=sentinel_login_resp.status_code)
                             return None, None
 
                         login_code = ""
@@ -639,6 +881,13 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                         headers=resend_headers,
                                         json_body={}, proxies=proxies, timeout=15,
                                     )
+                                    _increment_counter(
+                                        run_ctx,
+                                        "email_otp_resend_count",
+                                        event_type="email_otp_resent",
+                                        phase="email_otp",
+                                        message="接管验证码重发",
+                                    )
                                     time.sleep(2)
                                 except Exception as e:
                                     print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
@@ -650,6 +899,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                         if not login_code:
                             print(f"[{cfg.ts()}] [ERROR] 重试次数上限，丢弃当前 {mask_email(email)} 邮箱，放弃接管。")
+                            _set_failure(run_ctx, stage="takeover_wait_otp", message="login code empty")
                             return None, None
 
                         code_resp = _validate_email_otp_with_401_backoff(
@@ -666,6 +916,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             code=login_code,
                             proxies=proxies,
                             label="接管验证码",
+                            run_ctx=run_ctx,
                         )
 
                         if code_resp.status_code == 200:
@@ -673,9 +924,11 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             password = "Takeover_NoPassword"
                         else:
                             print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）接管验证码未通过: {code_resp.status_code}{code_resp.json()}")
+                            _set_failure(run_ctx, stage="takeover_validate_otp", http_status=code_resp.status_code)
                             return None, None
 
                         code_url = str(code_resp.json().get("continue_url") or "").strip()
+                        _history_patch(run_ctx, last_continue_url=code_url)
                         if code_url.endswith("/about-you"):
                             user_info = generate_random_user_info()
                             print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）初始化账户信息 "
@@ -692,21 +945,24 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             if sentinel_create:
                                 create_headers["openai-sentinel-token"] = sentinel_create
 
-                            create_account_resp = _post_with_retry(
-                                s_reg,
-                                "https://auth.openai.com/api/accounts/create_account",
+                            create_account_resp = _create_account_with_history(
+                                session=s_reg,
                                 headers=create_headers,
-                                json_body=user_info, proxies=proxies,
+                                user_info=user_info,
+                                proxies=proxies,
+                                run_ctx=run_ctx,
                             )
                             try:
                                 code_json = create_account_resp.json() or {}
                                 target_continue_url = str(code_json.get("continue_url") or "").strip()
+                                _history_patch(run_ctx, last_continue_url=target_continue_url)
                             except Exception:
                                 target_continue_url = ""
                         else:
                             try:
                                 code_json = code_resp.json() or {}
                                 target_continue_url = str(code_json.get("continue_url") or "").strip()
+                                _history_patch(run_ctx, last_continue_url=target_continue_url)
                             except Exception:
                                 target_continue_url = ""
 
@@ -790,6 +1046,13 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 headers=send_headers,
                                 json_body={}, proxies=proxies, timeout=30,
                             )
+                            _increment_counter(
+                                run_ctx,
+                                "email_otp_send_count",
+                                event_type="email_otp_sent",
+                                phase="email_otp",
+                                message="注册验证码发送",
+                            )
                         except Exception as e:
                             print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）OTP 初始发送请求异常: {e}")
 
@@ -816,6 +1079,13 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                         headers=resend_headers,
                                         json_body={}, proxies=proxies, timeout=15,
                                     )
+                                    _increment_counter(
+                                        run_ctx,
+                                        "email_otp_resend_count",
+                                        event_type="email_otp_resent",
+                                        phase="email_otp",
+                                        message="注册验证码重发",
+                                    )
                                     time.sleep(2)
                                 except Exception as e:
                                     print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
@@ -827,6 +1097,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                         if not code:
                             print(f"[{cfg.ts()}] [ERROR] 重试次数上限，丢弃当前 {mask_email(email)} 邮箱。")
+                            _set_failure(run_ctx, stage="register_wait_otp", message="signup code empty")
                             return None, None
 
                         code_resp = _validate_email_otp_with_401_backoff(
@@ -843,17 +1114,31 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             code=code,
                             proxies=proxies,
                             label="注册验证码",
+                            run_ctx=run_ctx,
                         )
 
                         if code_resp.status_code != 200:
                             print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）验证码校验未通过: {code_resp.status_code}")
+                            _set_failure(run_ctx, stage="register_validate_otp", http_status=code_resp.status_code)
                             return None, None
 
                         code_account_json = code_resp.json()
                         code_account_url = code_account_json.get("continue_url", "")
+                        _history_patch(run_ctx, last_continue_url=code_account_url)
 
                         if "/add-phone" in code_account_url:
                             print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}） 账号创建过程触发手机风控...")
+                            if run_ctx is not None:
+                                run_ctx["phone_gate_hit"] = True
+                            _history_patch(run_ctx, phone_gate_hit_flag=1, last_continue_url=code_account_url)
+                            _history_event(
+                                run_ctx,
+                                event_type="phone_gate_hit",
+                                phase="phone",
+                                ok_flag=False,
+                                url_key=code_account_url,
+                                message="register_add_phone",
+                            )
                             if attempt < MAX_REG_RETRIES - 1:
                                 print(
                                     f"[{cfg.ts()}] [INFO] （{mask_email(email)}） 准备重置环境，重新进行第 {attempt + 2} 次 注册流程尝试...")
@@ -870,13 +1155,18 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                                 if ok and next_url_or_reason:
                                     print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}） 手机验证成功，继续创建账号: {next_url_or_reason}")
+                                    if run_ctx is not None:
+                                        run_ctx["phone_otp_success"] = True
+                                        run_ctx["last_continue_url"] = next_url_or_reason
                                 else:
                                     print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） {next_url_or_reason}")
                                     if run_ctx is not None: run_ctx['phone_verify'] = True
+                                    _set_failure(run_ctx, stage="register_phone_otp", message=str(next_url_or_reason), continue_url=code_account_url)
                                     return None, None
                             else:
                                 print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}） HeroSMS主开关 或 创建时接码开关未开启，如果不想花钱接码请忽略该条提示")
                                 if run_ctx is not None: run_ctx['phone_verify'] = True
+                                _set_failure(run_ctx, stage="register_phone_gate", message="hero sms disabled", continue_url=code_account_url)
                                 return None, None
 
                     user_info = generate_random_user_info()
@@ -893,11 +1183,12 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                     if sentinel_create:
                         create_headers["openai-sentinel-token"] = sentinel_create
 
-                    create_account_resp = _post_with_retry(
-                        s_reg,
-                        "https://auth.openai.com/api/accounts/create_account",
+                    create_account_resp = _create_account_with_history(
+                        session=s_reg,
                         headers=create_headers,
-                        json_body=user_info, proxies=proxies,
+                        user_info=user_info,
+                        proxies=proxies,
+                        run_ctx=run_ctx,
                     )
 
                     if create_account_resp.status_code != 200:
@@ -916,14 +1207,17 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             if "been deleted or deactivated" in err_msg:
                                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）您没有帐户，因为它已被删除或停用。如果您认为这是一个错误，请通过我们的帮助中心help.openai.com.与我们联系")
                                 run_ctx['signup_blocked'] = True
+                                _set_failure(run_ctx, stage="create_account", message=err_msg, code=err_code, http_status=create_account_resp.status_code)
                                 return None, None
                             run_ctx['signup_blocked'] = True
                             print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）账户创建受阻，疑似被标记为账号已存在，返回: {create_account_resp.status_code}，该提示可忽略，不影响后面执行流程")
+                            _set_failure(run_ctx, stage="create_account", message=err_msg, code=err_code, http_status=create_account_resp.status_code)
                             return None, None
 
                     try:
                         create_json = create_account_resp.json() or {}
                         target_continue_url = str(create_json.get("continue_url") or "").strip()
+                        _history_patch(run_ctx, last_continue_url=target_continue_url)
                     except Exception:
                         target_continue_url = ""
 
@@ -938,11 +1232,12 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                     try:
                         _, current_url = _follow_redirect_chain_local(s_reg, workspace_hint_url, proxies)
                         if "code=" in current_url and "state=" in current_url:
-                            return submit_callback_url(
+                            return _submit_callback_with_history(
                                 callback_url=current_url,
                                 expected_state=oauth_reg.state,
                                 code_verifier=oauth_reg.code_verifier,
                                 proxies=proxies,
+                                run_ctx=run_ctx,
                             ), password
                     except Exception as e:
                         current_url = workspace_hint_url
@@ -976,11 +1271,12 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 _, final_url = _follow_redirect_chain_local(s_reg, next_url, proxies)
                                 if "code=" in final_url and "state=" in final_url:
                                     print(f"[{cfg.ts()}] [SUCCESS] （{mask_email(email)}）凭据提取成功！一气呵成！")
-                                    return submit_callback_url(
+                                    return _submit_callback_with_history(
                                         callback_url=final_url,
                                         expected_state=oauth_reg.state,
                                         code_verifier=oauth_reg.code_verifier,
                                         proxies=proxies,
+                                        run_ctx=run_ctx,
                                     ), password
                 print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）账号登录完毕，执行静默获取 Token...")
                 for oauth_attempt in range(2):
@@ -994,12 +1290,13 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                     resp, current_url = _follow_redirect_chain_local(s_log, oauth_log.auth_url, proxies)
                     if "code=" in current_url and "state=" in current_url:
-                        return submit_callback_url(
+                        return _submit_callback_with_history(
                             callback_url=current_url,
                             code_verifier=oauth_log.code_verifier,
                             redirect_uri=oauth_log.redirect_uri,
                             expected_state=oauth_log.state,
                             proxies=proxies,
+                            run_ctx=run_ctx,
                         ), password
                     log_did = s_log.cookies.get("oai-did") or did
 
@@ -1060,9 +1357,18 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             "https://auth.openai.com/api/accounts/passwordless/send-otp",
                             headers=login_send_headers, proxies=proxies, timeout=30,
                         )
+                        _increment_counter(
+                            run_ctx,
+                            "email_otp_send_count",
+                            event_type="email_otp_sent",
+                            phase="email_otp",
+                            message="OAuth 登录验证码发送",
+                            http_status=sentinel_login_resp.status_code,
+                        )
 
                         if sentinel_login_resp.status_code != 200:
                             print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）邮件发送异常, 返回: {sentinel_login_resp.status_code}")
+                            _set_failure(run_ctx, stage="oauth_takeover_send_otp", http_status=sentinel_login_resp.status_code)
                             return None, None
 
                         login_code_oauth = ""
@@ -1088,6 +1394,13 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                         headers=resend_headers,
                                         json_body={}, proxies=proxies, timeout=15,
                                     )
+                                    _increment_counter(
+                                        run_ctx,
+                                        "email_otp_resend_count",
+                                        event_type="email_otp_resent",
+                                        phase="email_otp",
+                                        message="OAuth 登录验证码重发",
+                                    )
                                     time.sleep(2)
                                 except Exception as e:
                                     print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
@@ -1099,6 +1412,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                         if not login_code_oauth:
                             print(f"[{cfg.ts()}] [ERROR] 重试次数上限，丢弃当前 {mask_email(email)} 邮箱，放弃接管。")
+                            _set_failure(run_ctx, stage="oauth_takeover_wait_otp", message="oauth login code empty")
                             return None, None
 
                         login_code_resp = _validate_email_otp_with_401_backoff(
@@ -1115,15 +1429,18 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             code=login_code_oauth,
                             proxies=proxies,
                             label="OAuth 登录验证码",
+                            run_ctx=run_ctx,
                         )
                         if login_code_resp.status_code == 200:
                             print(f"[{cfg.ts()}] [SUCCESS] （{mask_email(email)}）老帐号OAuth 阶段验证码通过！")
                             password = "Takeover_NoPassword"
                         else:
                             print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）老帐号OAuth 阶段验证码未通过，账号异常: {login_code_resp.status_code}")
+                            _set_failure(run_ctx, stage="oauth_takeover_validate_otp", http_status=login_code_resp.status_code)
                             return None, None
 
                         login_code_url = str(login_code_resp.json().get("continue_url") or "").strip()
+                        _history_patch(run_ctx, last_continue_url=login_code_url)
                         if login_code_url.endswith("/about-you"):
                             user_info = generate_random_user_info()
                             print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）初始化账户信息 "
@@ -1140,15 +1457,18 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             if sentinel_create:
                                 create_headers["openai-sentinel-token"] = sentinel_create
 
-                            create_account_resp = _post_with_retry(
-                                s_log,
-                                "https://auth.openai.com/api/accounts/create_account",
+                            create_account_resp = _create_account_with_history(
+                                session=s_log,
                                 headers=create_headers,
-                                json_body=user_info, proxies=proxies,
+                                user_info=user_info,
+                                proxies=proxies,
+                                run_ctx=run_ctx,
                             )
                             next_url = str(create_account_resp.json().get("continue_url") or "").strip()
+                            _history_patch(run_ctx, last_continue_url=next_url)
                         else:
                             next_url = str(login_code_resp.json().get("continue_url") or "").strip()
+                            _history_patch(run_ctx, last_continue_url=next_url)
 
                         resp, current_url = _follow_redirect_chain_local(s_log, next_url, proxies)
 
@@ -1220,6 +1540,13 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                     headers=log_send_headers,
                                     json_body={}, proxies=proxies, timeout=30,
                                 )
+                                _increment_counter(
+                                    run_ctx,
+                                    "email_otp_send_count",
+                                    event_type="email_otp_sent",
+                                    phase="email_otp",
+                                    message="静默登录验证码发送",
+                                )
                             except Exception as e:
                                 print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）登录 OTP 发送请求异常: {e}")
 
@@ -1246,6 +1573,13 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                             headers=log_resend_headers,
                                             json_body={}, proxies=proxies, timeout=15,
                                         )
+                                        _increment_counter(
+                                            run_ctx,
+                                            "email_otp_resend_count",
+                                            event_type="email_otp_resent",
+                                            phase="email_otp",
+                                            message="静默登录验证码重发",
+                                        )
                                         time.sleep(2)
                                     except Exception as e:
                                         print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
@@ -1257,6 +1591,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                             if not code2:
                                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）重新发送后依然未收到验证码，彻底放弃。")
+                                _set_failure(run_ctx, stage="oauth_secondary_wait_otp", message="secondary code empty")
                                 return None, None
 
                             code2_resp = _validate_email_otp_with_401_backoff(
@@ -1273,21 +1608,25 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 code=code2,
                                 proxies=proxies,
                                 label="二次安全验证 OTP",
+                                run_ctx=run_ctx,
                             )
                             if code2_resp.status_code != 200:
                                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）二次安全验证 OTP 校验失败: {code2_resp.status_code}")
+                                _set_failure(run_ctx, stage="oauth_secondary_validate_otp", http_status=code2_resp.status_code)
                                 return None, None
 
                             next_url = str(code2_resp.json().get("continue_url") or "").strip()
+                            _history_patch(run_ctx, last_continue_url=next_url)
                             resp, current_url = _follow_redirect_chain_local(s_log, next_url, proxies)
 
                     if "code=" in current_url and "state=" in current_url:
-                        return submit_callback_url(
+                        return _submit_callback_with_history(
                             callback_url=current_url,
                             code_verifier=oauth_log.code_verifier,
                             redirect_uri=oauth_log.redirect_uri,
                             expected_state=oauth_log.state,
                             proxies=proxies,
+                            run_ctx=run_ctx,
                         ), password
 
                     if current_url.endswith("/consent") or current_url.endswith("/workspace"):
@@ -1309,13 +1648,25 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             )
                             _, final_loc = _follow_redirect_chain_local(s_log, final_url, proxies)
                             if "code=" in final_loc:
-                                return submit_callback_url(
+                                return _submit_callback_with_history(
                                     callback_url=final_loc,
                                     expected_state=oauth_log.state,
                                     code_verifier=oauth_log.code_verifier,
                                     proxies=proxies,
+                                    run_ctx=run_ctx,
                                 ), password
                     if "/add-phone" in current_url:
+                        if run_ctx is not None:
+                            run_ctx["phone_gate_hit"] = True
+                        _history_patch(run_ctx, phone_gate_hit_flag=1, last_continue_url=current_url)
+                        _history_event(
+                            run_ctx,
+                            event_type="phone_gate_hit",
+                            phase="phone",
+                            ok_flag=False,
+                            url_key=current_url,
+                            message="oauth_add_phone",
+                        )
                         if oauth_attempt == 0:
                             continue
                         else:
@@ -1329,6 +1680,9 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                             if ok and next_url_or_reason:
                                 print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}） 手机验证成功，继续 OAuth 链路: {next_url_or_reason}")
+                                if run_ctx is not None:
+                                    run_ctx["phone_otp_success"] = True
+                                    run_ctx["last_continue_url"] = next_url_or_reason
 
                                 if next_url_or_reason.endswith("/about-you"):
                                     user_info = generate_random_user_info()
@@ -1346,20 +1700,23 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                     if sentinel_create:
                                         create_headers["openai-sentinel-token"] = sentinel_create
 
-                                    create_account_resp = _post_with_retry(
-                                        s_log,
-                                        "https://auth.openai.com/api/accounts/create_account",
+                                    create_account_resp = _create_account_with_history(
+                                        session=s_log,
                                         headers=create_headers,
-                                        json_body=user_info, proxies=proxies,
+                                        user_info=user_info,
+                                        proxies=proxies,
+                                        run_ctx=run_ctx,
                                     )
                                     next_url_or_reason = str(create_account_resp.json().get("continue_url") or "").strip()
+                                    _history_patch(run_ctx, last_continue_url=next_url_or_reason)
 
                                 if "code=" in next_url_or_reason:
-                                    return submit_callback_url(
+                                    return _submit_callback_with_history(
                                         callback_url=next_url_or_reason,
                                         expected_state=oauth_log.state,
                                         code_verifier=oauth_log.code_verifier,
                                         proxies=proxies,
+                                        run_ctx=run_ctx,
                                     ), password
 
                                 if next_url_or_reason.endswith("/consent") or next_url_or_reason.endswith("/workspace"):
@@ -1381,24 +1738,28 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                         )
                                         _, final_loc = _follow_redirect_chain_local(s_log, final_url, proxies)
                                         if "code=" in final_loc:
-                                            return submit_callback_url(
+                                            return _submit_callback_with_history(
                                                 callback_url=final_loc,
                                                 expected_state=oauth_log.state,
                                                 code_verifier=oauth_log.code_verifier,
                                                 proxies=proxies,
+                                                run_ctx=run_ctx,
                                             ), password
                             else:
                                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） {next_url_or_reason}")
+                                _set_failure(run_ctx, stage="oauth_phone_otp", message=str(next_url_or_reason), continue_url=current_url)
                             break
                     else:
                         break
 
                 if run_ctx is not None: run_ctx['phone_verify'] = True
                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） OAuth 授权链路追踪失败！当前死在网页: {current_url}")
+                _set_failure(run_ctx, stage="oauth_trace", message=current_url, continue_url=current_url)
                 return None, None
 
             except Exception as e:
                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） 注册主流程发生严重异常: {e}")
+                _set_failure(run_ctx, stage="main_exception", message=str(e))
                 if attempt < MAX_REG_RETRIES - 1:
                     print(f"[{cfg.ts()}] [INFO] 正在准备重试...")
                     time.sleep(2)

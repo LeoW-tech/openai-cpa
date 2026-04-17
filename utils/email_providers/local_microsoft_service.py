@@ -153,7 +153,7 @@ class LocalMicrosoftService:
                 return self._fetch_via_imap(mailbox)
             url = f"{self.graph_base_url}/messages"
             params = {
-                "$select": "subject,from,toRecipients,receivedDateTime,body",
+                "$select": "subject,from,toRecipients,receivedDateTime,body,bodyPreview",
                 "$orderby": "receivedDateTime desc",
                 "$top": 20
             }
