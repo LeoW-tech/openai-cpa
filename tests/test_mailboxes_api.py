@@ -71,9 +71,9 @@ class MailboxesApiTests(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(patch.dict(sys.modules, stub_modules))
             sys.modules.pop("routers.api_routes", None)
-            from routers import api_routes
+            import routers.api_routes as api_routes
 
-            return importlib.reload(api_routes)
+            return api_routes
 
     def test_get_mailboxes_returns_error_payload_when_query_fails(self):
         try:
