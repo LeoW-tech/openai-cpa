@@ -57,7 +57,9 @@ KNOWN_CLIPROXY_ERROR_LABELS = {
 }
 
 log_queue = queue.Queue(maxsize=500)
-_orig_print  = builtins.print
+if not hasattr(builtins, "_openai_cpa_real_print"):
+    builtins._openai_cpa_real_print = builtins.print
+_orig_print  = builtins._openai_cpa_real_print
 _thread_local = threading.local()
 _print_lock   = threading.Lock()
 
@@ -82,8 +84,8 @@ def web_print(*args, **kwargs):
                     pass
         _thread_local.buffer = ""
 
-
-builtins.print = web_print
+if builtins.print is not web_print:
+    builtins.print = web_print
 
 def _load_dotenv(path: str = ".env") -> None:
     if not os.path.exists(path):

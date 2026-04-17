@@ -89,6 +89,13 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
         self.assertEqual("success", status)
         self.assertIs(False, run_ctx["local_account_saved"])
 
+    def test_reload_core_engine_does_not_stack_print_wrapper(self):
+        first = self._reload_core_engine()
+        second = self._reload_core_engine()
+
+        self.assertIs(first._orig_print, second._orig_print)
+        self.assertIs(sys.modules["builtins"].print, second.web_print)
+
     def test_sub2api_usage_confirmation_only_runs_after_full_business_success(self):
         core_engine = self._reload_core_engine()
 
