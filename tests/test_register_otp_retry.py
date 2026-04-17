@@ -60,6 +60,7 @@ class RegisterOtpRetryTests(unittest.TestCase):
             _FakeResponse(200, {"continue_url": "https://auth.openai.com/success"}),
         ]
         processed_mail_ids = {"old-message"}
+        mail_state = {"demo@example.com": {"local_microsoft": {"last_accepted_received_ts": 123.0}}}
 
         with patch.object(self.register, "_post_with_retry", side_effect=responses) as post_mock:
             with patch.object(self.register, "get_oai_code", return_value="654321") as code_mock:
@@ -76,6 +77,7 @@ class RegisterOtpRetryTests(unittest.TestCase):
                                 email="demo@example.com",
                                 email_jwt='{"email":"demo@example.com"}',
                                 processed_mail_ids=processed_mail_ids,
+                                mail_state=mail_state,
                                 code="123456",
                                 proxies={"https": "http://127.0.0.1:7890"},
                                 label="接管验证码",
@@ -88,6 +90,7 @@ class RegisterOtpRetryTests(unittest.TestCase):
             jwt='{"email":"demo@example.com"}',
             proxies={"https": "http://127.0.0.1:7890"},
             processed_mail_ids=processed_mail_ids,
+            mail_state=mail_state,
             max_attempts=1,
         )
         self.assertEqual("123456", post_mock.call_args_list[0].kwargs["json_body"]["code"])
@@ -116,6 +119,7 @@ class RegisterOtpRetryTests(unittest.TestCase):
                                 email="demo@example.com",
                                 email_jwt='{"email":"demo@example.com"}',
                                 processed_mail_ids=set(),
+                                mail_state={},
                                 code="111111",
                                 proxies={"https": "http://127.0.0.1:7890"},
                                 label="普通验证码",
@@ -146,6 +150,7 @@ class RegisterOtpRetryTests(unittest.TestCase):
                                 email="demo@example.com",
                                 email_jwt='{"email":"demo@example.com"}',
                                 processed_mail_ids=set(),
+                                mail_state={},
                                 code="777777",
                                 proxies={"https": "http://127.0.0.1:7890"},
                                 label="OAuth 验证码",
@@ -172,6 +177,7 @@ class RegisterOtpRetryTests(unittest.TestCase):
                             email="demo@example.com",
                             email_jwt='{"email":"demo@example.com"}',
                             processed_mail_ids=set(),
+                            mail_state={},
                             code="123123",
                             proxies={"https": "http://127.0.0.1:7890"},
                             label="二次安全验证",
@@ -180,6 +186,74 @@ class RegisterOtpRetryTests(unittest.TestCase):
         self.assertEqual(400, resp.status_code)
         code_mock.assert_not_called()
         sleep_mock.assert_not_called()
+
+    def test_validate_email_otp_passes_shared_mail_state_to_backoff_poll(self):
+        responses = [
+            _FakeResponse(401, {"detail": "stale code"}),
+            _FakeResponse(200, {"continue_url": "https://auth.openai.com/success"}),
+        ]
+        mail_state = {"demo@example.com": {"local_microsoft": {"last_accepted_received_ts": 456.0}}}
+
+        with patch.object(self.register, "_post_with_retry", side_effect=responses):
+            with patch.object(self.register, "get_oai_code", return_value="654321") as code_mock:
+                with patch.object(self.register, "generate_payload", return_value="retry-sentinel"):
+                    with patch.object(self.register.time, "sleep"):
+                        with redirect_stdout(io.StringIO()):
+                            self.register._validate_email_otp_with_401_backoff(
+                                session=object(),
+                                did="did-5",
+                                ctx={"flow": "ctx"},
+                                proxy="http://127.0.0.1:7890",
+                                user_agent="ua",
+                                referer="https://auth.openai.com/email-verification",
+                                email="demo@example.com",
+                                email_jwt='{"email":"demo@example.com"}',
+                                processed_mail_ids=set(),
+                                mail_state=mail_state,
+                                code="123456",
+                                proxies={"https": "http://127.0.0.1:7890"},
+                                label="共享状态验证码",
+                            )
+
+        code_mock.assert_called_once_with(
+            "demo@example.com",
+            jwt='{"email":"demo@example.com"}',
+            proxies={"https": "http://127.0.0.1:7890"},
+            processed_mail_ids=set(),
+            mail_state=mail_state,
+            max_attempts=1,
+        )
+
+    def test_validate_email_otp_does_not_resubmit_old_code_when_no_new_mail_arrives(self):
+        responses = [
+            _FakeResponse(401, {"detail": "stale code"}),
+        ]
+
+        with patch.object(self.register, "_post_with_retry", side_effect=responses) as post_mock:
+            with patch.object(self.register, "get_oai_code", side_effect=["", "", ""]) as code_mock:
+                with patch.object(self.register, "generate_payload", return_value="retry-sentinel"):
+                    with patch.object(self.register.time, "sleep") as sleep_mock:
+                        with redirect_stdout(io.StringIO()):
+                            resp = self.register._validate_email_otp_with_401_backoff(
+                                session=object(),
+                                did="did-6",
+                                ctx={"flow": "ctx"},
+                                proxy="http://127.0.0.1:7890",
+                                user_agent="ua",
+                                referer="https://auth.openai.com/email-verification",
+                                email="demo@example.com",
+                                email_jwt='{"email":"demo@example.com"}',
+                                processed_mail_ids=set(),
+                                mail_state={},
+                                code="111111",
+                                proxies={"https": "http://127.0.0.1:7890"},
+                                label="无新邮件验证码",
+                            )
+
+        self.assertEqual(401, resp.status_code)
+        self.assertEqual(1, post_mock.call_count)
+        self.assertEqual(3, code_mock.call_count)
+        self.assertEqual([call(10), call(20), call(30)], sleep_mock.call_args_list)
 
     def test_run_uses_shared_otp_retry_helper_in_four_validate_call_sites(self):
         source = Path("/Users/meilinwang/Projects/openai-cpa-Public/utils/register.py").read_text(encoding="utf-8")

@@ -652,15 +652,29 @@ def _create_imap_conn(proxy_str=None):
     return imaplib.IMAP4_SSL(cfg.IMAP_SERVER, cfg.IMAP_PORT, timeout=15)
 
 
-def _poll_local_ms_for_oai_code_graph(ms_service, target_email: str, mailbox_dict: dict, max_attempts: int) -> str:
+def _get_local_microsoft_mail_state(mail_state: Optional[dict], target_email: str) -> Optional[dict]:
+    if mail_state is None:
+        return None
+    email_state = mail_state.setdefault(target_email.lower().strip(), {})
+    return email_state.setdefault("local_microsoft", {})
+
+
+def _poll_local_ms_for_oai_code_graph(
+        ms_service,
+        target_email: str,
+        mailbox_dict: dict,
+        processed_mail_ids: set,
+        mail_state: Optional[dict],
+        max_attempts: int,
+) -> str:
     from datetime import datetime
     import time
 
     assigned_at = float(mailbox_dict.get("assigned_at") or time.time())
     tgt = target_email.lower().strip()
     master_email = tgt.split('+')[0] + '@' + tgt.split('@')[1] if '+' in tgt else tgt
-
-    processed_msg_ids = set()
+    assigned_floor_ts = assigned_at - 60
+    graph_state = _get_local_microsoft_mail_state(mail_state, tgt)
 
     print(f"[{cfg.ts()}] [INFO] 进入 Graph 轮询器，靶向目标: {mask_email(tgt)}", flush=True)
 
@@ -676,15 +690,17 @@ def _poll_local_ms_for_oai_code_graph(ms_service, target_email: str, mailbox_dic
         else:
             for msg in messages:
                 msg_id = msg.get('id')
-                if msg_id in processed_msg_ids:
+                if not msg_id or msg_id in processed_mail_ids:
                     continue
                 raw_date = msg.get('receivedDateTime', '').replace('Z', '+00:00')
                 try:
                     received_ts = datetime.fromisoformat(raw_date).timestamp()
-                    if received_ts < assigned_at - 60:
-                        continue
                 except Exception:
                     continue
+                last_accepted_ts = float((graph_state or {}).get("last_accepted_received_ts") or 0.0)
+                floor_ts = max(assigned_floor_ts, last_accepted_ts)
+                if received_ts < floor_ts:
+                    break
                 sender = str(msg.get('from', {}).get('emailAddress', {}).get('address', '')).lower()
                 if "openai.com" not in sender:
                     continue
@@ -704,10 +720,11 @@ def _poll_local_ms_for_oai_code_graph(ms_service, target_email: str, mailbox_dic
                 if is_hit:
                     code = _extract_otp_code(f"{subject}\n{body_content}")
                     if code:
+                        processed_mail_ids.add(msg_id)
+                        if graph_state is not None:
+                            graph_state["last_accepted_received_ts"] = max(last_accepted_ts, received_ts)
                         print(f"\n[{cfg.ts()}] [SUCCESS] 🎯 成功捕获专属验证码: {code} -> {mask_email(tgt)}", flush=True)
                         return code
-
-                processed_msg_ids.add(msg_id)
 
         time.sleep(5)
     return ""
@@ -718,6 +735,7 @@ def get_oai_code(
         jwt: str = "",
         proxies: Any = None,
         processed_mail_ids: set = None,
+        mail_state: Optional[dict] = None,
         pattern: str = OTP_CODE_PATTERN,
         max_attempts: int = 20,
 ) -> str:
@@ -757,13 +775,14 @@ def get_oai_code(
 
         if local_ms_account:
             local_ms_account["email"] = str(local_ms_account.get("email") or email).strip()
-            local_ms_account["assigned_at"] = time.time() - 30
             from utils.email_providers.local_microsoft_service import LocalMicrosoftService
             ms_service = LocalMicrosoftService(proxies=mail_proxies)
             return _poll_local_ms_for_oai_code_graph(
                 ms_service=ms_service,
                 target_email=email,
                 mailbox_dict=local_ms_account,
+                processed_mail_ids=processed_mail_ids,
+                mail_state=mail_state,
                 max_attempts=max_attempts
             )
         else:

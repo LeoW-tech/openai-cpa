@@ -232,6 +232,7 @@ def _validate_email_otp_with_401_backoff(
         email: str,
         email_jwt: str,
         processed_mail_ids: set,
+        mail_state: Optional[dict] = None,
         code: str,
         proxies: Any = None,
         label: str = "验证码",
@@ -282,6 +283,7 @@ def _validate_email_otp_with_401_backoff(
             jwt=email_jwt,
             proxies=proxies,
             processed_mail_ids=processed_mail_ids,
+            mail_state=mail_state,
             max_attempts=1,
         )
         if not latest_code:
@@ -483,6 +485,7 @@ def _parse_workspace_from_auth_cookie(auth_cookie: str) -> list:
 
 def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
     processed_mails: set = set()
+    mail_state: dict = {}
     proxy = cfg.format_docker_url(proxy)
     if proxy and proxy.startswith("socks5://"):
         proxy = proxy.replace("socks5://", "socks5h://")
@@ -625,7 +628,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
 
                         login_code = get_oai_code(email, jwt=email_jwt, proxies=proxies,
-                                            processed_mail_ids=processed_mails)
+                                            processed_mail_ids=processed_mails, mail_state=mail_state)
                         if login_code:
                             break
 
@@ -643,6 +646,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                         email=email,
                         email_jwt=email_jwt,
                         processed_mail_ids=processed_mails,
+                        mail_state=mail_state,
                         code=login_code,
                         proxies=proxies,
                         label="接管验证码",
@@ -796,7 +800,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
 
                         code = get_oai_code(email, jwt=email_jwt, proxies=proxies,
-                                            processed_mail_ids=processed_mails)
+                                            processed_mail_ids=processed_mails, mail_state=mail_state)
                         if code:
                             break
 
@@ -814,6 +818,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                         email=email,
                         email_jwt=email_jwt,
                         processed_mail_ids=processed_mails,
+                        mail_state=mail_state,
                         code=code,
                         proxies=proxies,
                         label="注册验证码",
@@ -1060,7 +1065,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
 
                         login_code_oauth = get_oai_code(email, jwt=email_jwt, proxies=proxies,
-                                            processed_mail_ids=processed_mails)
+                                            processed_mail_ids=processed_mails, mail_state=mail_state)
                         if login_code_oauth:
                             break
 
@@ -1078,6 +1083,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                         email=email,
                         email_jwt=email_jwt,
                         processed_mail_ids=processed_mails,
+                        mail_state=mail_state,
                         code=login_code_oauth,
                         proxies=proxies,
                         label="老帐号OAuth 阶段验证码",
@@ -1214,7 +1220,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                     print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
 
                             code2 = get_oai_code(email, jwt=email_jwt, proxies=proxies,
-                                                 processed_mail_ids=processed_mails)
+                                                 processed_mail_ids=processed_mails, mail_state=mail_state)
                             if code2:
                                 break
 
@@ -1232,6 +1238,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             email=email,
                             email_jwt=email_jwt,
                             processed_mail_ids=processed_mails,
+                            mail_state=mail_state,
                             code=code2,
                             proxies=proxies,
                             label="二次安全验证 OTP",

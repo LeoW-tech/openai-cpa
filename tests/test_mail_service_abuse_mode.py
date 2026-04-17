@@ -33,6 +33,28 @@ class _AbuseStopService:
         return []
 
 
+class _StaticMessageService:
+    def __init__(self, message_batches):
+        self._message_batches = list(message_batches)
+        self.calls = 0
+
+    def fetch_openai_messages(self, mailbox):
+        index = min(self.calls, len(self._message_batches) - 1)
+        self.calls += 1
+        return self._message_batches[index]
+
+
+def _graph_message(*, msg_id, received, subject, code, to_address):
+    return {
+        "id": msg_id,
+        "subject": subject,
+        "from": {"emailAddress": {"address": "noreply@openai.com"}},
+        "toRecipients": [{"emailAddress": {"address": to_address}}],
+        "receivedDateTime": received,
+        "body": {"content": f"Your ChatGPT code is {code}"},
+    }
+
+
 class MailServiceAbuseModeTests(unittest.TestCase):
     def test_graph_poll_stops_immediately_after_mailbox_enters_abuse_mode(self):
         service = _AbuseStopService()
@@ -48,6 +70,8 @@ class MailServiceAbuseModeTests(unittest.TestCase):
                     ms_service=service,
                     target_email="user+alias@example.com",
                     mailbox_dict=mailbox,
+                    processed_mail_ids=set(),
+                    mail_state={},
                     max_attempts=5,
                 )
 
@@ -55,6 +79,171 @@ class MailServiceAbuseModeTests(unittest.TestCase):
         self.assertEqual("abuse_mode", mailbox.get("_polling_stopped"))
         self.assertEqual(1, service.calls)
         sleep_mock.assert_not_called()
+
+    def test_graph_poll_prefers_newest_matching_message(self):
+        service = _StaticMessageService([
+            [
+                _graph_message(
+                    msg_id="msg-new",
+                    received="2026-04-17T10:00:05+00:00",
+                    subject="Your ChatGPT code",
+                    code="654321",
+                    to_address="user+alias@example.com",
+                ),
+                _graph_message(
+                    msg_id="msg-old",
+                    received="2026-04-17T10:00:01+00:00",
+                    subject="Your ChatGPT code",
+                    code="123456",
+                    to_address="user+alias@example.com",
+                ),
+            ]
+        ])
+        mailbox = {
+            "email": "user+alias@example.com",
+            "master_email": "user@example.com",
+            "assigned_at": 1_760_400_000.0,
+        }
+        processed_mail_ids = set()
+        mail_state = {}
+
+        with patch("utils.email_providers.mail_service.time.sleep") as sleep_mock:
+            with redirect_stdout(io.StringIO()):
+                code = _poll_local_ms_for_oai_code_graph(
+                    ms_service=service,
+                    target_email="user+alias@example.com",
+                    mailbox_dict=mailbox,
+                    processed_mail_ids=processed_mail_ids,
+                    mail_state=mail_state,
+                    max_attempts=1,
+                )
+
+        self.assertEqual("654321", code)
+        self.assertEqual({"msg-new"}, processed_mail_ids)
+        self.assertEqual(
+            1_776_420_005.0,
+            mail_state["user+alias@example.com"]["local_microsoft"]["last_accepted_received_ts"],
+        )
+        sleep_mock.assert_not_called()
+
+    def test_graph_poll_does_not_reuse_same_message_or_fall_back_to_older_mail(self):
+        service = _StaticMessageService([
+            [
+                _graph_message(
+                    msg_id="msg-new",
+                    received="2026-04-17T10:00:05+00:00",
+                    subject="Your ChatGPT code",
+                    code="654321",
+                    to_address="user+alias@example.com",
+                ),
+                _graph_message(
+                    msg_id="msg-old",
+                    received="2026-04-17T10:00:01+00:00",
+                    subject="Your ChatGPT code",
+                    code="123456",
+                    to_address="user+alias@example.com",
+                ),
+            ]
+        ])
+        mailbox = {
+            "email": "user+alias@example.com",
+            "master_email": "user@example.com",
+            "assigned_at": 1_760_400_000.0,
+        }
+        processed_mail_ids = set()
+        mail_state = {}
+
+        with patch("utils.email_providers.mail_service.time.sleep"):
+            with redirect_stdout(io.StringIO()):
+                first_code = _poll_local_ms_for_oai_code_graph(
+                    ms_service=service,
+                    target_email="user+alias@example.com",
+                    mailbox_dict=mailbox,
+                    processed_mail_ids=processed_mail_ids,
+                    mail_state=mail_state,
+                    max_attempts=1,
+                )
+            with redirect_stdout(io.StringIO()):
+                second_code = _poll_local_ms_for_oai_code_graph(
+                    ms_service=service,
+                    target_email="user+alias@example.com",
+                    mailbox_dict=mailbox,
+                    processed_mail_ids=processed_mail_ids,
+                    mail_state=mail_state,
+                    max_attempts=1,
+                )
+
+        self.assertEqual("654321", first_code)
+        self.assertEqual("", second_code)
+        self.assertEqual({"msg-new"}, processed_mail_ids)
+        self.assertEqual(
+            1_776_420_005.0,
+            mail_state["user+alias@example.com"]["local_microsoft"]["last_accepted_received_ts"],
+        )
+
+    def test_graph_poll_accepts_later_message_after_previous_one_was_consumed(self):
+        service = _StaticMessageService([
+            [
+                _graph_message(
+                    msg_id="msg-current",
+                    received="2026-04-17T10:00:01+00:00",
+                    subject="Your ChatGPT code",
+                    code="111111",
+                    to_address="user+alias@example.com",
+                )
+            ],
+            [
+                _graph_message(
+                    msg_id="msg-latest",
+                    received="2026-04-17T10:00:07+00:00",
+                    subject="Your ChatGPT code",
+                    code="222222",
+                    to_address="user+alias@example.com",
+                ),
+                _graph_message(
+                    msg_id="msg-current",
+                    received="2026-04-17T10:00:01+00:00",
+                    subject="Your ChatGPT code",
+                    code="111111",
+                    to_address="user+alias@example.com",
+                ),
+            ],
+        ])
+        mailbox = {
+            "email": "user+alias@example.com",
+            "master_email": "user@example.com",
+            "assigned_at": 1_760_400_000.0,
+        }
+        processed_mail_ids = set()
+        mail_state = {}
+
+        with patch("utils.email_providers.mail_service.time.sleep"):
+            with redirect_stdout(io.StringIO()):
+                first_code = _poll_local_ms_for_oai_code_graph(
+                    ms_service=service,
+                    target_email="user+alias@example.com",
+                    mailbox_dict=mailbox,
+                    processed_mail_ids=processed_mail_ids,
+                    mail_state=mail_state,
+                    max_attempts=1,
+                )
+            with redirect_stdout(io.StringIO()):
+                second_code = _poll_local_ms_for_oai_code_graph(
+                    ms_service=service,
+                    target_email="user+alias@example.com",
+                    mailbox_dict=mailbox,
+                    processed_mail_ids=processed_mail_ids,
+                    mail_state=mail_state,
+                    max_attempts=1,
+                )
+
+        self.assertEqual("111111", first_code)
+        self.assertEqual("222222", second_code)
+        self.assertEqual({"msg-current", "msg-latest"}, processed_mail_ids)
+        self.assertEqual(
+            1_776_420_007.0,
+            mail_state["user+alias@example.com"]["local_microsoft"]["last_accepted_received_ts"],
+        )
 
 
 if __name__ == "__main__":
