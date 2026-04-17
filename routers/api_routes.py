@@ -165,6 +165,31 @@ def parse_cpa_usage_to_details(raw_usage: dict) -> dict:
     details["cpa_plan_type"] = "未知"
     return details
 
+
+def _is_placeholder_remote_value(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    if text in {"xxxx", "your-api-token", "your_api_token", "changeme", "placeholder"}:
+        return True
+    return "your-domain.com" in text or "example.com" in text
+
+
+def _is_sub2api_cloud_enabled() -> bool:
+    return bool(
+        getattr(cfg, "ENABLE_SUB2API_MODE", False)
+        and str(getattr(cfg, "SUB2API_URL", "") or "").strip()
+        and str(getattr(cfg, "SUB2API_KEY", "") or "").strip()
+    )
+
+
+def _is_cpa_cloud_enabled() -> bool:
+    return bool(
+        getattr(cfg, "ENABLE_CPA_MODE", False)
+        and not _is_placeholder_remote_value(getattr(cfg, "CPA_API_URL", ""))
+        and not _is_placeholder_remote_value(getattr(cfg, "CPA_API_TOKEN", ""))
+    )
+
 @router.get("/")
 async def get_dashboard():
     version = "1.0.0"
@@ -536,7 +561,7 @@ def get_cloud_accounts(types: str = "sub2api,cpa", page: int = Query(1), page_si
     type_list = types.split(",")
     combined_data = []
     try:
-        if "sub2api" in type_list and getattr(cfg, 'SUB2API_URL', None) and getattr(cfg, 'SUB2API_KEY', None):
+        if "sub2api" in type_list and _is_sub2api_cloud_enabled():
             client = Sub2APIClient(api_url=cfg.SUB2API_URL, api_key=cfg.SUB2API_KEY)
             success, raw_sub2_data = client.get_all_accounts()
             if success:
@@ -559,7 +584,7 @@ def get_cloud_accounts(types: str = "sub2api,cpa", page: int = Query(1), page_si
                                     "codex_7d_used_percent": extra.get("codex_7d_used_percent", 0)}
                     })
 
-        if "cpa" in type_list and getattr(cfg, 'CPA_API_URL', None) and getattr(cfg, 'CPA_API_TOKEN', None):
+        if "cpa" in type_list and _is_cpa_cloud_enabled():
             from curl_cffi import requests
             res = requests.get(core_engine._normalize_cpa_auth_files_url(cfg.CPA_API_URL),
                                headers={"Authorization": f"Bearer {cfg.CPA_API_TOKEN}"}, timeout=20,
@@ -585,13 +610,10 @@ def process_cloud_action(req: CloudActionReq, token: str = Depends(verify_token)
     from concurrent.futures import ThreadPoolExecutor
 
     success_count, fail_count, updated_details_map = 0, 0, {}
-    sub2api_client = Sub2APIClient(api_url=cfg.SUB2API_URL, api_key=cfg.SUB2API_KEY) if getattr(cfg, 'SUB2API_URL',
-                                                                                                None) and getattr(cfg,
-                                                                                                                  'SUB2API_KEY',
-                                                                                                                  None) else None
+    sub2api_client = Sub2APIClient(api_url=cfg.SUB2API_URL, api_key=cfg.SUB2API_KEY) if _is_sub2api_cloud_enabled() else None
 
     cpa_files_map = {}
-    if any(a.type == "cpa" for a in req.accounts) and req.action == "check" and getattr(cfg, 'CPA_API_URL', None):
+    if any(a.type == "cpa" for a in req.accounts) and req.action == "check" and _is_cpa_cloud_enabled():
         try:
             res = requests.get(core_engine._normalize_cpa_auth_files_url(cfg.CPA_API_URL),
                                headers={"Authorization": f"Bearer {cfg.CPA_API_TOKEN}"}, timeout=15,
@@ -613,7 +635,7 @@ def process_cloud_action(req: CloudActionReq, token: str = Depends(verify_token)
                 elif req.action == "delete":
                     is_success, _ = sub2api_client.delete_account(acc.id)
 
-            elif acc.type == "cpa" and getattr(cfg, 'CPA_API_URL', None):
+            elif acc.type == "cpa" and _is_cpa_cloud_enabled():
                 if req.action == "check":
                     item = cpa_files_map.get(acc.id, {"name": acc.id, "disabled": False})
                     is_success, _ = core_engine.test_cliproxy_auth_file(item, cfg.CPA_API_URL, cfg.CPA_API_TOKEN)

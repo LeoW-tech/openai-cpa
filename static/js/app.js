@@ -101,7 +101,7 @@ createApp({
             isLoadingSub2APIGroups: false,
             cloudAccounts: [],
             selectedCloud: [],
-            cloudFilters: ['sub2api', 'cpa'],
+            cloudFilters: [],
             showCloudPlaintext: false,
             cloudPage: 1,
             cloudPageSize: 10,
@@ -200,6 +200,37 @@ createApp({
             }
             return res;
         },
+        isPlaceholderCloudConfigValue(value) {
+            const normalized = String(value || '').trim().toLowerCase();
+            if (!normalized) return true;
+            if (['xxxx', 'your-api-token', 'your_api_token', 'changeme', 'placeholder'].includes(normalized)) {
+                return true;
+            }
+            return normalized.includes('your-domain.com') || normalized.includes('example.com');
+        },
+        getEnabledCloudTypes() {
+            const enabled = [];
+            const hasSub2Api = !!(
+                this.config?.sub2api_mode?.enable &&
+                String(this.config?.sub2api_mode?.api_url || '').trim() &&
+                String(this.config?.sub2api_mode?.api_key || '').trim()
+            );
+            const hasCpa = !!(
+                this.config?.cpa_mode?.enable &&
+                !this.isPlaceholderCloudConfigValue(this.config?.cpa_mode?.api_url) &&
+                !this.isPlaceholderCloudConfigValue(this.config?.cpa_mode?.api_token)
+            );
+
+            if (hasSub2Api) enabled.push('sub2api');
+            if (hasCpa) enabled.push('cpa');
+            return enabled;
+        },
+        syncCloudFilters() {
+            const enabled = this.getEnabledCloudTypes();
+            const current = Array.isArray(this.cloudFilters) ? this.cloudFilters : [];
+            const next = current.filter(type => enabled.includes(type));
+            this.cloudFilters = next.length > 0 ? next : enabled;
+        },
 
         async handleLogin() {
             if(!this.loginPassword) { this.showToast("请输入密码！", "warning"); return; }
@@ -294,6 +325,9 @@ createApp({
             try {
                 const res = await this.authFetch('/api/config');
                 this.config = await res.json();
+                if (!this.config.cpa_mode) {
+                    this.config.cpa_mode = {};
+                }
                 if (!this.config.tg_bot) {
                     this.config.tg_bot = { enable: false, token: '', chat_id: '' };
                 }
@@ -365,6 +399,7 @@ createApp({
                 if (this.config.cluster_node_name === undefined) this.config.cluster_node_name = '';
                 if (this.config.cluster_master_url === undefined) this.config.cluster_master_url = '';
                 if (this.config.cluster_secret === undefined) this.config.cluster_secret = 'wenfxl666';
+                this.syncCloudFilters();
             } catch (e) {}
         },
         async saveConfig() {
@@ -1352,6 +1387,7 @@ createApp({
         },
 
         async fetchCloudAccounts() {
+            this.syncCloudFilters();
             if (this.cloudFilters.length === 0) {
                 this.cloudAccounts = [];
                 this.cloudTotal = 0;
