@@ -77,6 +77,55 @@ class ApiConfigHeroSmsTests(unittest.TestCase):
         saved_config = reload_configs.call_args.kwargs["new_config_dict"]
         self.assertNotIn("reuse_max_uses", saved_config["hero_sms"])
 
+    def test_save_config_merges_missing_sections_from_existing_runtime_config(self):
+        api_routes = self._reload_api_routes()
+        api_routes.core_engine.cfg._c = {
+            "hero_sms": {
+                "enabled": True,
+                "reuse_phone": True,
+                "api_key": "existing-key",
+                "base_url": "https://hero-sms.example/api",
+            },
+            "sub2api_mode": {
+                "enable": False,
+                "api_url": "https://sub2api.example",
+                "api_key": "sub-key",
+                "threads": 10,
+            },
+            "cpa_mode": {
+                "enable": False,
+                "api_url": "https://cpa.example",
+                "api_token": "cpa-token",
+            },
+            "tg_bot": {
+                "enable": True,
+                "chat_id": "chat-1",
+            },
+            "web_password": "secret-pass",
+        }
+        new_config = {
+            "hero_sms": {
+                "enabled": False,
+            },
+            "sub2api_mode": {},
+            "cpa_mode": {},
+        }
+
+        with patch.object(api_routes, "reload_all_configs") as reload_configs:
+            result = asyncio.run(api_routes.save_config(new_config=new_config, token="demo"))
+
+        self.assertEqual("success", result["status"])
+        saved_config = reload_configs.call_args.kwargs["new_config_dict"]
+        self.assertEqual(False, saved_config["hero_sms"]["enabled"])
+        self.assertEqual("existing-key", saved_config["hero_sms"]["api_key"])
+        self.assertEqual("https://hero-sms.example/api", saved_config["hero_sms"]["base_url"])
+        self.assertEqual("https://sub2api.example", saved_config["sub2api_mode"]["api_url"])
+        self.assertEqual("sub-key", saved_config["sub2api_mode"]["api_key"])
+        self.assertEqual("https://cpa.example", saved_config["cpa_mode"]["api_url"])
+        self.assertEqual("cpa-token", saved_config["cpa_mode"]["api_token"])
+        self.assertEqual({"enable": True, "chat_id": "chat-1"}, saved_config["tg_bot"])
+        self.assertEqual("secret-pass", saved_config["web_password"])
+
 
 if __name__ == "__main__":
     unittest.main()

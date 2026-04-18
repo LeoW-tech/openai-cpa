@@ -11,6 +11,7 @@ import subprocess
 import yaml
 import urllib.parse
 import httpx
+import copy
 from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -602,6 +603,18 @@ def _sanitize_local_microsoft_config(local_ms: Any) -> dict:
     return data
 
 
+def _deep_merge_config(base: Any, incoming: Any) -> Any:
+    if isinstance(base, dict) and isinstance(incoming, dict):
+        merged = copy.deepcopy(base)
+        for key, value in incoming.items():
+            if key in merged:
+                merged[key] = _deep_merge_config(merged[key], value)
+            else:
+                merged[key] = copy.deepcopy(value)
+        return merged
+    return copy.deepcopy(incoming)
+
+
 @router.get("/api/config")
 async def get_config(token: str = Depends(verify_token)):
     config_data = getattr(core_engine.cfg, '_c', {}).copy()
@@ -618,12 +631,13 @@ async def get_config(token: str = Depends(verify_token)):
 @router.post("/api/config")
 async def save_config(new_config: dict, token: str = Depends(verify_token)):
     try:
-        if isinstance(new_config.get("sub2api_mode"), dict):
-            new_config["sub2api_mode"].pop("min_remaining_weekly_percent", None)
-        if isinstance(new_config.get("hero_sms"), dict):
-            new_config["hero_sms"].pop("reuse_max_uses", None)
-        new_config["local_microsoft"] = _sanitize_local_microsoft_config(new_config.get("local_microsoft"))
-        reload_all_configs(new_config_dict=new_config)
+        merged_config = _deep_merge_config(getattr(core_engine.cfg, "_c", {}) or {}, new_config or {})
+        if isinstance(merged_config.get("sub2api_mode"), dict):
+            merged_config["sub2api_mode"].pop("min_remaining_weekly_percent", None)
+        if isinstance(merged_config.get("hero_sms"), dict):
+            merged_config["hero_sms"].pop("reuse_max_uses", None)
+        merged_config["local_microsoft"] = _sanitize_local_microsoft_config(merged_config.get("local_microsoft"))
+        reload_all_configs(new_config_dict=merged_config)
 
         return {"status": "success", "message": "✅ 配置已成功保存并同步至云端！"}
     except Exception as e:
