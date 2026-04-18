@@ -879,9 +879,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             except Exception as e:
                                 print(f"[{cfg.ts()}] [WARNING] LuckMail 可用性检测异常(忽略并继续): {e}")
 
-                        if cfg.EMAIL_API_MODE == "local_microsoft":
-                            record_ms_snapshot(email, jwt=email_jwt, proxies=proxies)
-
                         print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）老帐号触发初次发信...")
                         sentinel_login_resp =_post_with_retry(
                             s_reg,
@@ -906,8 +903,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                         for resend_attempt in range(max(1, cfg.MAX_OTP_RETRIES)):
                             if getattr(cfg, 'GLOBAL_STOP', False): return None, None
                             if resend_attempt > 0:
-                                if cfg.EMAIL_API_MODE == "local_microsoft":
-                                    record_ms_snapshot(email, jwt=email_jwt, proxies=proxies)
                                 print(f"\n[{cfg.ts()}] [INFO] 未收到登录验证码正在重试 {resend_attempt}/{cfg.MAX_OTP_RETRIES}...")
                                 try:
                                     sentinel_resend = generate_payload(did=did, flow="authorize_continue", proxy=proxy,
@@ -1068,9 +1063,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             except Exception as e:
                                 print(f"[{cfg.ts()}] [WARNING] LuckMail 可用性检测异常(忽略并继续): {e}")
 
-                        if cfg.EMAIL_API_MODE == "local_microsoft":
-                            record_ms_snapshot(email, jwt=email_jwt, proxies=proxies)
-
                         print(f"\n[{cfg.ts()}] [INFO] 正在向 {mask_email(email)} 主动请求发送验证码...")
                         send_otp_url = "https://auth.openai.com/api/accounts/email-otp/send"
 
@@ -1104,8 +1096,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                         for resend_attempt in range(max(1, cfg.MAX_OTP_RETRIES)):
                             if getattr(cfg, 'GLOBAL_STOP', False): return None, None
                             if resend_attempt > 0:
-                                if cfg.EMAIL_API_MODE == "local_microsoft":
-                                    record_ms_snapshot(email, jwt=email_jwt, proxies=proxies)
                                 print(f"\n[{cfg.ts()}] [INFO] 正在重试 {resend_attempt}/{cfg.MAX_OTP_RETRIES}...")
                                 try:
                                     sentinel_resend = generate_payload(did=did, flow="authorize_continue", proxy=proxy,
@@ -1399,9 +1389,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                     return None, None
                             except Exception as e:
                                 print(f"[{cfg.ts()}] [WARNING] LuckMail 可用性检测异常(忽略并继续): {e}")
-                        if cfg.EMAIL_API_MODE == "local_microsoft":
-                            record_ms_snapshot(email, jwt=email_jwt, proxies=proxies)
-
                         print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）老帐号OAuth无密码登录发信...")
                         sentinel_login_resp =_post_with_retry(
                             s_log,
@@ -1426,8 +1413,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                         for login_code_attempt in range(max(1, cfg.MAX_OTP_RETRIES)):
                             if getattr(cfg, 'GLOBAL_STOP', False): return None, None
                             if login_code_attempt > 0:
-                                if cfg.EMAIL_API_MODE == "local_microsoft":
-                                    record_ms_snapshot(email, jwt=email_jwt, proxies=proxies)
                                 print(f"\n[{cfg.ts()}] [INFO] 老帐号OAuth 阶段未收到验证码正在重试 {login_code_attempt}/{cfg.MAX_OTP_RETRIES}...")
                                 try:
                                     login_code_resend = generate_payload(did=log_did, flow="authorize_continue", proxy=proxy,
@@ -1573,8 +1558,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                     print(f"[{cfg.ts()}] [WARNING] LuckMail 可用性检测异常(忽略并继续): {e}")
 
                             print(f"\n[{cfg.ts()}] [INFO] （{mask_email(email)}）静默登录需要验证码，主动触发发送...")
-                            if cfg.EMAIL_API_MODE == "local_microsoft":
-                                record_ms_snapshot(email, jwt=email_jwt, proxies=proxies)
                             try:
                                 sentinel_log_send = generate_payload(did=log_did, flow="authorize_continue", proxy=proxy,
                                                                      user_agent=current_ua, impersonate="chrome110", ctx=log_ctx)
@@ -1605,8 +1588,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             for resend_attempt in range(max(1, cfg.MAX_OTP_RETRIES)):
                                 if getattr(cfg, 'GLOBAL_STOP', False): return None, None
                                 if resend_attempt > 0:
-                                    if cfg.EMAIL_API_MODE == "local_microsoft":
-                                        record_ms_snapshot(email, jwt=email_jwt, proxies=proxies)
                                     print(f"\n[{cfg.ts()}] [INFO] （{mask_email(email)}）正在重试 {resend_attempt}/{cfg.MAX_OTP_RETRIES}...")
                                     try:
                                         sentinel_log_resend = generate_payload(did=log_did, flow="authorize_continue", proxy=proxy,

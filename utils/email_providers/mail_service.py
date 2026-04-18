@@ -19,6 +19,7 @@ from utils import config as cfg
 from utils.integrations.ai_service import AIService
 from utils.email_providers.gmail_service import get_gmail_otp_via_oauth
 from utils.email_providers.duckmail_service import DuckMailService
+from utils.email_providers.postman_center import global_postman_fleet, wait_for_code
 
 class ProxyIMAP4_SSL(imaplib.IMAP4_SSL):
     """支持 Socks5 和 HTTP 代理的局部 IMAP 客户端"""
@@ -47,7 +48,7 @@ class ProxyIMAP4_SSL(imaplib.IMAP4_SSL):
 luckmail_lock = threading.Lock()
 
 _CM_TOKEN_CACHE: Optional[str] = None
-MS_SNAPSHOT_STORAGE = {}
+
 _thread_data = threading.local()
 _orig_sleep = time.sleep
 LOCAL_USED_PIDS = set()
@@ -437,6 +438,7 @@ def get_email_and_token(proxies: Any = None) -> tuple:
         email = mailbox_info["email"]
         set_last_email(email)
         print(f"[{cfg.ts()}] [INFO] 微软库分配并锁定账号: ({mask_email(email)})")
+        global_postman_fleet.add_mailbox_listener(ms_service, mailbox_info)
         return email, json.dumps(mailbox_info, ensure_ascii=False)
 
     prefix, ai_enabled = _get_ai_data_package()
@@ -750,7 +752,6 @@ def _create_imap_conn(proxy_str=None):
         return ProxyIMAP4_SSL(cfg.IMAP_SERVER, cfg.IMAP_PORT, proxy_url=proxy_str, timeout=15)
     return imaplib.IMAP4_SSL(cfg.IMAP_SERVER, cfg.IMAP_PORT, timeout=15)
 
-
 def _get_local_microsoft_mail_state(mail_state: Optional[dict], target_email: str) -> Optional[dict]:
     if mail_state is None:
         return None
@@ -839,17 +840,9 @@ def _poll_local_ms_for_oai_code_graph(
 
 
 def record_ms_snapshot(email: str, jwt: str, proxies: Any = None):
-    try:
-        from utils.email_providers.local_microsoft_service import LocalMicrosoftService
-        parsed_jwt = json.loads(jwt or "{}")
-        mbox = parsed_jwt if isinstance(parsed_jwt, dict) else {}
-        mbox["email"] = email
-        ms = LocalMicrosoftService(proxies=proxies)
-        snapshot = ms.get_snapshot_ids(mbox, email)
+    # 兼容旧调用方；v11.0.3 起本地微软邮箱改由邮局派常驻监听，不再依赖快照预热。
+    return None
 
-        MS_SNAPSHOT_STORAGE[email.lower()] = snapshot
-    except Exception as e:
-        pass
 
 def get_oai_code(
         email: str,
@@ -896,9 +889,13 @@ def get_oai_code(
 
         if local_ms_account:
             local_ms_account["email"] = str(local_ms_account.get("email") or email).strip()
+            timeout = max(5, max_attempts * 3)
+            fast_code = wait_for_code(email, timeout=timeout)
+            if fast_code:
+                return fast_code
+
             from utils.email_providers.local_microsoft_service import LocalMicrosoftService
             ms_service = LocalMicrosoftService(proxies=mail_proxies)
-            excluded = MS_SNAPSHOT_STORAGE.pop(email.lower(), set())
 
             return _poll_local_ms_for_oai_code_graph(
                 ms_service=ms_service,
@@ -907,7 +904,6 @@ def get_oai_code(
                 processed_mail_ids=processed_mail_ids,
                 mail_state=mail_state,
                 max_attempts=max_attempts,
-                excluded_ids=excluded
             )
         else:
             print(f"\n[{cfg.ts()}] [ERROR] 缺少微软邮箱凭据，无法收信。")

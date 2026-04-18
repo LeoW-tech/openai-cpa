@@ -574,10 +574,11 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
         token_data = _apply_sub2api_proxy_name(json.loads(token_json_str), run_ctx)
         account_email = token_data.get("email", "unknown")
         token_json_str = json.dumps(token_data, ensure_ascii=False, separators=(",", ":"))
+        source_mode = _resolve_source_mode(cpa_upload=cpa_upload, run_ctx=run_ctx)
         ensured_attempt_id = registration_history.ensure_attempt(
             run_ctx,
             run_id=int(run_stats.get("analytics_run_id") or 0),
-            source_mode="cpa" if cpa_upload else ("sub2api" if getattr(cfg, "ENABLE_SUB2API_MODE", False) else "normal"),
+            source_mode=source_mode,
             flow_type="register",
             email=account_email,
             master_email=master_email,
@@ -590,7 +591,7 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
         if run_ctx is not None and not ensured_attempt_id:
             registration_history.record_history_failure(
                 stage="ensure_attempt_before_save",
-                source_mode="cpa" if cpa_upload else ("sub2api" if getattr(cfg, "ENABLE_SUB2API_MODE", False) else "normal"),
+                source_mode=source_mode,
                 run_id=int(run_stats.get("analytics_run_id") or 0),
                 email=account_email,
                 proxy_name=str((run_ctx or {}).get("sub2api_proxy_name") or ""),
@@ -638,10 +639,11 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
 
         send_tg_msg_sync(success_text)
 
+    source_mode = _resolve_source_mode(cpa_upload=cpa_upload, run_ctx=run_ctx)
     analytics_attempt_id = registration_history.ensure_attempt(
         run_ctx,
         run_id=int(run_stats.get("analytics_run_id") or 0),
-        source_mode="cpa" if cpa_upload else ("sub2api" if getattr(cfg, "ENABLE_SUB2API_MODE", False) else "normal"),
+        source_mode=source_mode,
         flow_type="register",
         email=account_email or last_email,
         master_email=master_email,
@@ -700,7 +702,7 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
     elif run_ctx is not None:
         registration_history.record_history_failure(
             stage="finish_attempt",
-            source_mode="cpa" if cpa_upload else ("sub2api" if getattr(cfg, "ENABLE_SUB2API_MODE", False) else "normal"),
+            source_mode=source_mode,
             run_id=int(run_stats.get("analytics_run_id") or 0),
             email=account_email or last_email,
             proxy_name=str((run_ctx or {}).get("sub2api_proxy_name") or ""),
@@ -726,6 +728,16 @@ def _apply_sub2api_proxy_name(token_data: dict, run_ctx: dict = None, proxy_url:
         if isinstance(run_ctx, dict):
             run_ctx["sub2api_proxy_name"] = proxy_name
     return updated
+
+
+def _resolve_source_mode(cpa_upload: bool = False, run_ctx: dict = None) -> str:
+    if cpa_upload:
+        return "cpa"
+    if isinstance(run_ctx, dict):
+        explicit_mode = str(run_ctx.get("analytics_source_mode") or "").strip().lower()
+        if explicit_mode in {"normal", "sub2api", "cpa"}:
+            return explicit_mode
+    return "normal"
 
 
 def _sync_run_ctx_proxy_name(run_ctx: dict = None, proxy_url: str = None) -> None:
@@ -754,6 +766,7 @@ def run_and_refresh(proxy, args, cpa_upload=False, skip_switch=False):
     result = None
     run_ctx = {}
     _sync_run_ctx_proxy_name(run_ctx, proxy)
+    run_ctx["analytics_source_mode"] = _resolve_source_mode(cpa_upload=cpa_upload, run_ctx=run_ctx)
     run_ctx["analytics_started_monotonic"] = time.time()
     run_ctx["analytics_metrics"] = {}
     run_ctx["analytics_attempt_no"] = int(run_stats.get("success", 0) + run_stats.get("failed", 0) + run_stats.get("retries", 0) + 1)
@@ -761,7 +774,7 @@ def run_and_refresh(proxy, args, cpa_upload=False, skip_switch=False):
         run_id=int(run_stats.get("analytics_run_id") or 0),
         task_id="",
         worker_id="",
-        source_mode="cpa" if cpa_upload else ("sub2api" if getattr(cfg, "ENABLE_SUB2API_MODE", False) else "normal"),
+        source_mode=_resolve_source_mode(cpa_upload=cpa_upload, run_ctx=run_ctx),
         attempt_no=int(run_ctx["analytics_attempt_no"]),
         flow_type="register",
         email_provider_type=str(getattr(cfg, "EMAIL_API_MODE", "") or ""),
@@ -1341,6 +1354,7 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event):
                             print(f"[{ts()}] [WARNING] [Sub2API补货] 全局节点切换失败...")
                     run_ctx = {}
                     _sync_run_ctx_proxy_name(run_ctx, p)
+                    run_ctx["analytics_source_mode"] = "sub2api"
                     run_ctx["analytics_started_monotonic"] = time.time()
                     run_ctx["analytics_metrics"] = {}
                     run_ctx["analytics_attempt_no"] = int(run_stats.get("success", 0) + run_stats.get("failed", 0) + run_stats.get("retries", 0) + 1)
@@ -1554,6 +1568,12 @@ class RegEngine:
         self.thread_stop_event.set()
         if self.loop and self.async_stop_event:
             self.loop.call_soon_threadsafe(self.async_stop_event.set)
+
+        try:
+            from utils.email_providers.postman_center import global_postman_fleet
+            global_postman_fleet.clear_fleet()
+        except Exception:
+            pass
 
     def is_running(self) -> bool:
         if self._force_stopped:
