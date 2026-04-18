@@ -31,6 +31,8 @@ def _history_patch(run_ctx: Optional[dict], **fields: Any) -> None:
     attempt_id = _history_attempt_id(run_ctx)
     if attempt_id:
         registration_history.patch_attempt(attempt_id, **fields)
+        return
+    registration_history.buffer_pending_patch(run_ctx, **fields)
 
 
 def _history_event(
@@ -54,6 +56,16 @@ def _history_event(
             message=message,
             snapshot=snapshot,
         )
+        return
+    registration_history.buffer_pending_event(
+        run_ctx,
+        event_type=event_type,
+        phase=phase,
+        ok_flag=ok_flag,
+        http_status=http_status,
+        message=message,
+        snapshot=snapshot,
+    )
 
 
 def _history_increment(run_ctx: Optional[dict], field_name: str, delta: int = 1) -> int:

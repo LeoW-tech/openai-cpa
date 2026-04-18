@@ -278,6 +278,110 @@ def _safe_execute_one(sql: str, params: Iterable[Any] = (), *, as_dict: bool = F
         return cursor.fetchone()
 
 
+def _pending_patch_store(run_ctx: Optional[dict]) -> dict[str, Any]:
+    if not isinstance(run_ctx, dict):
+        return {}
+    pending = run_ctx.get("analytics_pending_patch")
+    if not isinstance(pending, dict):
+        pending = {}
+        run_ctx["analytics_pending_patch"] = pending
+    return pending
+
+
+def _pending_events_store(run_ctx: Optional[dict]) -> list[dict[str, Any]]:
+    if not isinstance(run_ctx, dict):
+        return []
+    pending = run_ctx.get("analytics_pending_events")
+    if not isinstance(pending, list):
+        pending = []
+        run_ctx["analytics_pending_events"] = pending
+    return pending
+
+
+def buffer_pending_patch(run_ctx: Optional[dict], **fields: Any) -> None:
+    pending = _pending_patch_store(run_ctx)
+    if not pending:
+        if not isinstance(run_ctx, dict):
+            return
+        pending = run_ctx["analytics_pending_patch"] = {}
+    for key, value in fields.items():
+        pending[key] = value
+
+
+def buffer_pending_event(run_ctx: Optional[dict], **event: Any) -> None:
+    pending = _pending_events_store(run_ctx)
+    if isinstance(run_ctx, dict):
+        pending.append(dict(event))
+
+
+def record_history_failure(
+        *,
+        stage: str,
+        source_mode: str = "",
+        run_id: int = 0,
+        email: str = "",
+        proxy_name: str = "",
+        error_message: str = "",
+        payload: Optional[dict] = None,
+        recovered_flag: bool = False,
+) -> int:
+    if not _analytics_enabled():
+        return 0
+    try:
+        with db_manager.get_db_conn() as conn:
+            cursor = db_manager.get_cursor(conn)
+            db_manager.execute_sql(
+                cursor,
+                """
+                INSERT INTO registration_history_failures (
+                    occurred_at, stage, source_mode, run_id, email, proxy_name,
+                    error_message, payload_json, recovered_flag
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _utc_now_str(),
+                    str(stage or "").strip(),
+                    str(source_mode or "").strip(),
+                    int(run_id or 0),
+                    str(email or "").strip().lower(),
+                    str(proxy_name or "").strip(),
+                    _trim_text(error_message),
+                    _json_dumps(payload or {}),
+                    _coerce_bool_int(recovered_flag),
+                ),
+            )
+            return int(getattr(cursor, "lastrowid", 0) or 0)
+    except Exception as exc:
+        print(f"[{cfg.ts()}] [WARNING] 历史失败审计写入失败: {exc}")
+        return 0
+
+
+def _replay_pending_history(run_ctx: Optional[dict], attempt_id: int) -> None:
+    if not isinstance(run_ctx, dict) or not attempt_id:
+        return
+    pending_patch = dict(run_ctx.get("analytics_pending_patch") or {})
+    pending_events = list(run_ctx.get("analytics_pending_events") or [])
+    if pending_patch:
+        patch_attempt(attempt_id, **pending_patch)
+    for item in pending_events:
+        if not isinstance(item, dict):
+            continue
+        record_attempt_event(
+            attempt_id,
+            event_type=str(item.get("event_type") or item.get("type") or "buffered_event"),
+            phase=str(item.get("phase") or ""),
+            elapsed_ms=item.get("elapsed_ms"),
+            ok_flag=item.get("ok_flag"),
+            http_status=item.get("http_status"),
+            reason_code=str(item.get("reason_code") or ""),
+            message=str(item.get("message") or ""),
+            url_key=str(item.get("url_key") or ""),
+            snapshot=item.get("snapshot"),
+        )
+    run_ctx["analytics_pending_patch"] = {}
+    run_ctx["analytics_pending_events"] = []
+
+
 def start_run(
         *,
         source_mode: str,
@@ -451,7 +555,87 @@ def start_attempt(
         return attempt_id
     except Exception as exc:
         print(f"[{cfg.ts()}] [WARNING] 历史分析 start_attempt 失败: {exc}")
+        record_history_failure(
+            stage="start_attempt",
+            source_mode=source_mode,
+            run_id=run_id,
+            email=email_full,
+            proxy_name=proxy_name,
+            error_message=str(exc),
+            payload={"flow_type": flow_type, "task_id": task_id},
+        )
         return 0
+
+
+def ensure_attempt(
+        run_ctx: Optional[dict],
+        *,
+        run_id: int = 0,
+        source_mode: str = "",
+        flow_type: str = "register",
+        email: str = "",
+        master_email: str = "",
+        email_provider_type: str = "",
+        email_provider_detail: str = "",
+        proxy_url: str = "",
+        proxy_name: str = "",
+        task_id: str = "",
+        worker_id: str = "",
+        auto_capture_network: bool = False,
+) -> int:
+    if not isinstance(run_ctx, dict):
+        run_ctx = {}
+    try:
+        current_attempt_id = int(run_ctx.get("analytics_attempt_id") or 0)
+    except (TypeError, ValueError):
+        current_attempt_id = 0
+    if current_attempt_id:
+        return current_attempt_id
+
+    pending_patch = dict(run_ctx.get("analytics_pending_patch") or {})
+    resolved_email = (
+        str(email or "").strip().lower()
+        or str(pending_patch.get("linked_account_email") or "").strip().lower()
+        or str(pending_patch.get("email_full") or "").strip().lower()
+    )
+    resolved_proxy_name = str(proxy_name or pending_patch.get("proxy_name") or "").strip()
+
+    attempt_id = start_attempt(
+        run_id=run_id,
+        task_id=str(task_id or "").strip(),
+        worker_id=str(worker_id or "").strip(),
+        source_mode=str(source_mode or "").strip(),
+        attempt_no=int(run_ctx.get("analytics_attempt_no") or 1),
+        flow_type=str(flow_type or "register").strip(),
+        email=resolved_email,
+        master_email=str(master_email or "").strip().lower(),
+        email_provider_type=str(email_provider_type or "").strip(),
+        email_provider_detail=str(email_provider_detail or "").strip(),
+        proxy_url=str(proxy_url or "").strip(),
+        proxy_name=resolved_proxy_name,
+        auto_capture_network=auto_capture_network,
+    )
+    if not attempt_id:
+        record_history_failure(
+            stage="start_attempt",
+            source_mode=source_mode,
+            run_id=run_id,
+            email=resolved_email,
+            proxy_name=resolved_proxy_name,
+            error_message="ensure_attempt failed to create attempt",
+            payload={
+                "flow_type": flow_type,
+                "email_provider_type": email_provider_type,
+                "email_provider_detail": email_provider_detail,
+                "has_pending_patch": bool(pending_patch),
+                "pending_events": len(run_ctx.get("analytics_pending_events") or []),
+            },
+        )
+        return 0
+
+    run_ctx["analytics_attempt_id"] = attempt_id
+    _replay_pending_history(run_ctx, attempt_id)
+    return attempt_id
 
 
 def patch_attempt(attempt_id: int, **fields: Any) -> bool:
@@ -467,6 +651,7 @@ def patch_attempt(attempt_id: int, **fields: Any) -> bool:
             "signup_blocked_flag", "pwd_blocked_flag", "phone_gate_hit_flag",
             "phone_otp_entered_flag", "phone_otp_success_flag",
             "phone_bind_attempted_flag", "phone_bind_success_flag", "phone_bind_failed_flag",
+            "account_registered_flag",
         }:
             prepared[key] = _coerce_bool_int(value)
         elif key == "failure_message":
@@ -487,6 +672,13 @@ def patch_attempt(attempt_id: int, **fields: Any) -> bool:
         return True
     except Exception as exc:
         print(f"[{cfg.ts()}] [WARNING] 历史分析 patch_attempt 失败: {exc}")
+        record_history_failure(
+            stage="patch_attempt",
+            email=str(prepared.get("linked_account_email") or prepared.get("email_full") or ""),
+            proxy_name=str(prepared.get("proxy_name") or ""),
+            error_message=str(exc),
+            payload={"attempt_id": attempt_id, "fields": list(prepared.keys())},
+        )
         return False
 
 
@@ -616,6 +808,14 @@ def finish_attempt(
         if value is not None:
             payload[key] = value
     ok = patch_attempt(attempt_id, **payload)
+    if not ok:
+        record_history_failure(
+            stage="finish_attempt",
+            email=str(payload.get("linked_account_email") or ""),
+            proxy_name=str(payload.get("proxy_name") or ""),
+            error_message="patch_attempt returned false during finish_attempt",
+            payload={"attempt_id": attempt_id, "final_status": payload.get("final_status")},
+        )
     record_attempt_event(
         attempt_id,
         event_type="attempt_finished",
@@ -849,6 +1049,139 @@ def _percentile(values: list[int], ratio: float) -> int:
     return ordered[index]
 
 
+def _fetch_account_success_rows(filters: Optional[dict]) -> list[dict[str, Any]]:
+    normalized = _normalize_filters(filters)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if normalized.get("started_from"):
+        clauses.append("created_at >= ?")
+        params.append(str(normalized["started_from"]))
+    if normalized.get("started_to"):
+        clauses.append("created_at <= ?")
+        params.append(str(normalized["started_to"]))
+    if normalized.get("email_domain"):
+        clauses.append("lower(substr(email, instr(email, '@') + 1)) = ?")
+        params.append(str(normalized["email_domain"]).lower())
+    where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    rows = _safe_execute(
+        f"SELECT id, email, token_data, created_at FROM accounts{where_sql} ORDER BY created_at DESC, id DESC",
+        params,
+        as_dict=True,
+    )
+    results: list[dict[str, Any]] = []
+    proxy_filter = str(normalized.get("proxy_name") or "").strip()
+    for row in rows:
+        item = dict(row)
+        token_payload = {}
+        try:
+            token_payload = json.loads(item.get("token_data") or "{}")
+        except Exception:
+            token_payload = {}
+        proxy_name = str(token_payload.get("sub2api_proxy_name") or "").strip()
+        item["proxy_name"] = proxy_name
+        item["email"] = str(item.get("email") or "").strip().lower()
+        item["created_at"] = str(item.get("created_at") or "").strip()
+        if proxy_filter and proxy_name != proxy_filter:
+            continue
+        results.append(item)
+    return results
+
+
+def _find_matching_success_attempt(account_row: dict[str, Any], filters: Optional[dict]) -> dict[str, Any]:
+    normalized = _normalize_filters(filters)
+    clauses = [
+        "success_flag = 1",
+        "lower(coalesce(linked_account_email, email_full, '')) = ?",
+        "coalesce(linked_account_created_at, '') = ?",
+    ]
+    params: list[Any] = [
+        str(account_row.get("email") or "").strip().lower(),
+        str(account_row.get("created_at") or "").strip(),
+    ]
+    if normalized.get("source_mode"):
+        clauses.append("source_mode = ?")
+        params.append(str(normalized["source_mode"]).strip())
+    row = _safe_execute_one(
+        f"SELECT * FROM registration_attempts WHERE {' AND '.join(clauses)} ORDER BY id DESC LIMIT 1",
+        params,
+        as_dict=True,
+    )
+    return dict(row) if row else {}
+
+
+def _possible_coverage_reason(account_row: dict[str, Any], filters: Optional[dict]) -> str:
+    normalized = _normalize_filters(filters)
+    same_email_clauses = [
+        "success_flag = 1",
+        "lower(coalesce(linked_account_email, email_full, '')) = ?",
+    ]
+    same_email_params: list[Any] = [str(account_row.get("email") or "").strip().lower()]
+    if normalized.get("source_mode"):
+        same_email_clauses.append("source_mode = ?")
+        same_email_params.append(str(normalized["source_mode"]).strip())
+    row = _safe_execute_one(
+        f"SELECT id FROM registration_attempts WHERE {' AND '.join(same_email_clauses)} ORDER BY id DESC LIMIT 1",
+        same_email_params,
+    )
+    if row:
+        return "email_matched_but_timestamp_mismatch"
+    return "no_matching_attempt"
+
+
+def list_coverage_audit(filters: Optional[dict]) -> dict[str, Any]:
+    accounts = _fetch_account_success_rows(filters)
+    rows: list[dict[str, Any]] = []
+    missing_total = 0
+    for account in accounts:
+        matched = _find_matching_success_attempt(account, filters)
+        match_status = "matched" if matched else "missing"
+        if match_status == "missing":
+            missing_total += 1
+        rows.append(
+            {
+                "account_id": int(account.get("id") or 0),
+                "email": str(account.get("email") or "").strip().lower(),
+                "created_at": str(account.get("created_at") or "").strip(),
+                "proxy_name": str(account.get("proxy_name") or "").strip(),
+                "match_status": match_status,
+                "attempt_id": int(matched.get("id") or 0) if matched else 0,
+                "possible_reason": "" if matched else _possible_coverage_reason(account, filters),
+            }
+        )
+    return {
+        "accounts_total": len(accounts),
+        "missing_total": missing_total,
+        "rows": rows,
+    }
+
+
+def _count_history_failures(filters: Optional[dict]) -> int:
+    normalized = _normalize_filters(filters)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if normalized.get("started_from"):
+        clauses.append("occurred_at >= ?")
+        params.append(str(normalized["started_from"]))
+    if normalized.get("started_to"):
+        clauses.append("occurred_at <= ?")
+        params.append(str(normalized["started_to"]))
+    if normalized.get("source_mode"):
+        clauses.append("source_mode = ?")
+        params.append(str(normalized["source_mode"]).strip())
+    if normalized.get("proxy_name"):
+        clauses.append("proxy_name = ?")
+        params.append(str(normalized["proxy_name"]).strip())
+    if normalized.get("email_domain"):
+        clauses.append("lower(substr(email, instr(email, '@') + 1)) = ?")
+        params.append(str(normalized["email_domain"]).lower())
+    where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    row = _safe_execute_one(
+        f"SELECT COUNT(*) FROM registration_history_failures{where_sql}",
+        params,
+    )
+    return int((row[0] if row else 0) or 0)
+
+
 def get_overview(filters: Optional[dict]) -> dict[str, Any]:
     rows = _fetch_attempt_rows(filters)
     attempts = len(rows)
@@ -866,33 +1199,9 @@ def get_overview(filters: Optional[dict]) -> dict[str, Any]:
     )
     durations = [_row_duration(row) for row in rows if _row_duration(row) > 0]
     avg_duration = round(sum(durations) / len(durations), 2) if durations else 0
-    account_clauses = []
-    account_params: list[Any] = []
-    normalized = _normalize_filters(filters)
-    if normalized.get("started_from"):
-        account_clauses.append("created_at >= ?")
-        account_params.append(str(normalized["started_from"]))
-    if normalized.get("started_to"):
-        account_clauses.append("created_at <= ?")
-        account_params.append(str(normalized["started_to"]))
-    if normalized.get("email_domain"):
-        account_clauses.append("lower(substr(email, instr(email, '@') + 1)) = ?")
-        account_params.append(str(normalized["email_domain"]).lower())
-    account_where = (" WHERE " + " AND ".join(account_clauses)) if account_clauses else ""
-    account_rows = _safe_execute(
-        f"SELECT email FROM accounts{account_where}",
-        account_params,
-    )
-    success_attempt_emails = {
-        str(row.get("linked_account_email") or row.get("email_full") or "").strip().lower()
-        for row in rows
-        if int(row.get("success_flag") or 0) == 1
-    }
-    history_coverage_gap = 0
-    for account_row in account_rows:
-        account_email = str(account_row[0] or "").strip().lower()
-        if account_email and account_email not in success_attempt_emails:
-            history_coverage_gap += 1
+    coverage = list_coverage_audit(filters)
+    history_coverage_gap = int(coverage.get("missing_total") or 0)
+    history_write_failures = _count_history_failures(filters)
     return {
         "attempts": attempts,
         "successes": successes,
@@ -909,6 +1218,7 @@ def get_overview(filters: Optional[dict]) -> dict[str, Any]:
         "phone_bind_failed": phone_bind_failed,
         "cluster_import_successes": cluster_import_successes,
         "history_coverage_gap": history_coverage_gap,
+        "history_write_failures": history_write_failures,
     }
 
 
@@ -1098,6 +1408,63 @@ def backfill_accounts_history(limit: Optional[int] = None) -> int:
             message="legacy account backfilled",
         )
         inserted += 1
+    return inserted
+
+
+def compensate_missing_success_attempts(limit: Optional[int] = None) -> int:
+    if not _analytics_enabled():
+        return 0
+    audit = list_coverage_audit({})
+    inserted = 0
+    for row in audit["rows"]:
+        if row.get("match_status") != "missing":
+            continue
+        account_row = _safe_execute_one(
+            "SELECT email, token_data, created_at FROM accounts WHERE id = ?",
+            (int(row.get("account_id") or 0),),
+            as_dict=True,
+        )
+        if not account_row:
+            continue
+        token_payload = {}
+        try:
+            token_payload = json.loads(account_row["token_data"] or "{}")
+        except Exception:
+            token_payload = {}
+        email = str(account_row["email"] or "").strip().lower()
+        created_at = str(account_row["created_at"] or "").strip() or _utc_now_str()
+        attempt_id = start_attempt(
+            source_mode="success_compensation",
+            flow_type="register",
+            email=email,
+            proxy_name=str(token_payload.get("sub2api_proxy_name") or "").strip(),
+            linked_account_email=email,
+            linked_account_created_at=created_at,
+            auto_capture_network=False,
+            result_snapshot_json={"token_type": str(token_payload.get("type") or "")},
+        )
+        if not attempt_id:
+            record_history_failure(
+                stage="success_compensation",
+                source_mode="success_compensation",
+                email=email,
+                proxy_name=str(token_payload.get("sub2api_proxy_name") or "").strip(),
+                error_message="failed to create compensation attempt",
+                payload={"created_at": created_at},
+            )
+            continue
+        finish_attempt(
+            attempt_id,
+            final_status="success",
+            success_flag=True,
+            finished_at=created_at,
+            linked_account_email=email,
+            linked_account_created_at=created_at,
+            proxy_name=str(token_payload.get("sub2api_proxy_name") or "").strip(),
+        )
+        inserted += 1
+        if limit is not None and inserted >= int(limit):
+            break
     return inserted
 
 

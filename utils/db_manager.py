@@ -219,6 +219,7 @@ def init_db():
                 phone_bind_failed_flag INTEGER DEFAULT 0,
                 phone_bind_failure_reason TEXT,
                 phone_bind_stage TEXT,
+                account_registered_flag INTEGER DEFAULT 0,
                 local_save_ok INTEGER DEFAULT 0,
                 cpa_upload_ok INTEGER DEFAULT 0,
                 sub2api_push_ok INTEGER DEFAULT 0,
@@ -265,6 +266,20 @@ def init_db():
                 status TEXT
             )
         ''')
+        execute_sql(c, '''
+            CREATE TABLE IF NOT EXISTS registration_history_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                occurred_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                stage TEXT,
+                source_mode TEXT,
+                run_id INTEGER,
+                email TEXT,
+                proxy_name TEXT,
+                error_message TEXT,
+                payload_json TEXT,
+                recovered_flag INTEGER DEFAULT 0
+            )
+        ''')
         try:
             execute_sql(c, 'ALTER TABLE local_mailboxes ADD COLUMN fission_count INTEGER DEFAULT 0;')
             execute_sql(c, 'ALTER TABLE local_mailboxes ADD COLUMN retry_master INTEGER DEFAULT 0;')
@@ -287,6 +302,7 @@ def init_db():
             'ALTER TABLE registration_attempts ADD COLUMN phone_bind_failed_flag INTEGER DEFAULT 0;',
             'ALTER TABLE registration_attempts ADD COLUMN phone_bind_failure_reason TEXT;',
             'ALTER TABLE registration_attempts ADD COLUMN phone_bind_stage TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN account_registered_flag INTEGER DEFAULT 0;',
         ):
             try:
                 execute_sql(c, alter_sql)
@@ -300,6 +316,7 @@ def init_db():
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_phone_otp_entered ON registration_attempts(phone_otp_entered_flag)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_phone_bind_attempted ON registration_attempts(phone_bind_attempted_flag)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_phone_bind_success ON registration_attempts(phone_bind_success_flag)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_account_registered ON registration_attempts(account_registered_flag)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_proxy_name ON registration_attempts(proxy_name)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_exit_ip ON registration_attempts(exit_ip)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_geo_country_name ON registration_attempts(geo_country_name)',
@@ -310,6 +327,8 @@ def init_db():
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_external_attempt_id ON registration_attempts(external_attempt_id)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_source_node_name ON registration_attempts(source_node_name)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempt_events_attempt_seq ON registration_attempt_events(attempt_id, seq_no)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_history_failures_occurred_at ON registration_history_failures(occurred_at)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_history_failures_stage ON registration_history_failures(stage)',
         ):
             try:
                 execute_sql(c, index_sql)
@@ -357,6 +376,18 @@ def get_token_by_email(email: str) -> dict:
     except Exception as e:
         print(f"[{ts()}] [ERROR] 读取 Token 失败: {e}")
         return None
+
+
+def get_account_created_at(email: str) -> str:
+    try:
+        with get_db_conn() as conn:
+            c = get_cursor(conn)
+            execute_sql(c, "SELECT created_at FROM accounts WHERE email = ?", (email,))
+            row = c.fetchone()
+            return str((row[0] if row else "") or "")
+    except Exception as e:
+        print(f"[{ts()}] [ERROR] 读取账号创建时间失败: {e}")
+        return ""
 
 
 def get_tokens_by_emails(emails: list) -> list:

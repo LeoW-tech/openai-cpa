@@ -45,6 +45,7 @@ class RegistrationHistoryTests(unittest.TestCase):
         self.assertIn("registration_attempts", tables)
         self.assertIn("registration_attempt_events", tables)
         self.assertIn("ip_geo_cache", tables)
+        self.assertIn("registration_history_failures", tables)
 
     def test_init_db_creates_phone_binding_columns(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -66,6 +67,7 @@ class RegistrationHistoryTests(unittest.TestCase):
         self.assertIn("phone_bind_failed_flag", columns)
         self.assertIn("phone_bind_failure_reason", columns)
         self.assertIn("phone_bind_stage", columns)
+        self.assertIn("account_registered_flag", columns)
 
     def test_history_service_records_attempt_and_events(self):
         run_id = self.history.start_run(
@@ -297,6 +299,155 @@ class RegistrationHistoryTests(unittest.TestCase):
         self.assertEqual("Japan", rows[5])
         self.assertEqual("", rows[6])
         self.assertEqual("NODE-2", rows[7])
+
+    def test_ensure_attempt_flushes_pending_patch_and_events(self):
+        run_ctx = {
+            "analytics_pending_patch": {
+                "proxy_name": "HK-01",
+                "phone_bind_attempted_flag": 1,
+            },
+            "analytics_pending_events": [
+                {
+                    "event_type": "email_acquired",
+                    "phase": "register",
+                    "ok_flag": True,
+                    "message": "buffered-email",
+                },
+                {
+                    "event_type": "account_registered_pending_token",
+                    "phase": "account",
+                    "ok_flag": True,
+                    "message": "buffered-pending",
+                },
+            ],
+        }
+
+        attempt_id = self.history.ensure_attempt(
+            run_ctx,
+            run_id=0,
+            source_mode="sub2api",
+            flow_type="register",
+            email="buffered@example.com",
+            proxy_url="http://127.0.0.1:7890",
+            proxy_name="HK-01",
+            email_provider_type="local_microsoft",
+            email_provider_detail="protocol",
+            auto_capture_network=False,
+        )
+
+        self.assertTrue(attempt_id)
+        self.assertEqual(attempt_id, run_ctx["analytics_attempt_id"])
+        self.assertEqual({}, run_ctx["analytics_pending_patch"])
+        self.assertEqual([], run_ctx["analytics_pending_events"])
+
+        with sqlite3.connect(self.db_path) as conn:
+            attempt = conn.execute(
+                """
+                SELECT email_full, proxy_name, phone_bind_attempted_flag
+                FROM registration_attempts
+                WHERE id = ?
+                """,
+                (attempt_id,),
+            ).fetchone()
+            events = conn.execute(
+                """
+                SELECT event_type, message
+                FROM registration_attempt_events
+                WHERE attempt_id = ?
+                ORDER BY seq_no ASC
+                """,
+                (attempt_id,),
+            ).fetchall()
+
+        self.assertEqual("buffered@example.com", attempt[0])
+        self.assertEqual("HK-01", attempt[1])
+        self.assertEqual(1, attempt[2])
+        self.assertIn(("email_acquired", "buffered-email"), events)
+        self.assertIn(("account_registered_pending_token", "buffered-pending"), events)
+
+    def test_coverage_audit_and_overview_use_exact_success_records(self):
+        token_data = json.dumps({"email": "repeat@example.com", "sub2api_proxy_name": "US-01"})
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO accounts (email, password, token_data, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("repeat@example.com", "unit-pass", token_data, "2026-04-18 09:00:00"),
+            )
+            conn.commit()
+
+        first_attempt = self.history.start_attempt(
+            source_mode="success_compensation",
+            flow_type="register",
+            email="repeat@example.com",
+            linked_account_email="repeat@example.com",
+            linked_account_created_at="2026-04-18 08:00:00",
+            proxy_name="JP-01",
+            auto_capture_network=False,
+        )
+        self.history.finish_attempt(
+            first_attempt,
+            final_status="success",
+            success_flag=True,
+            finished_at="2026-04-18 08:00:00",
+            linked_account_email="repeat@example.com",
+            linked_account_created_at="2026-04-18 08:00:00",
+            proxy_name="JP-01",
+        )
+
+        filters = {"started_from": "2026-04-18 00:00:00", "started_to": "2026-04-18 23:59:59"}
+        audit = self.history.list_coverage_audit(filters)
+        overview = self.history.get_overview(filters)
+
+        self.assertEqual(1, audit["accounts_total"])
+        self.assertEqual(1, audit["missing_total"])
+        missing_rows = [row for row in audit["rows"] if row["match_status"] == "missing"]
+        self.assertEqual(1, len(missing_rows))
+        self.assertEqual("2026-04-18 09:00:00", missing_rows[0]["created_at"])
+        self.assertEqual("email_matched_but_timestamp_mismatch", missing_rows[0]["possible_reason"])
+        self.assertEqual(1, overview["history_coverage_gap"])
+
+    def test_compensate_missing_success_attempts_creates_minimal_attempts(self):
+        token_data = json.dumps(
+            {
+                "email": "missing@example.com",
+                "refresh_token": "rt-demo",
+                "sub2api_proxy_name": "AR-01",
+                "type": "codex",
+            }
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO accounts (email, password, token_data, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("missing@example.com", "unit-pass", token_data, "2026-04-18 10:00:00"),
+            )
+            conn.commit()
+
+        inserted = self.history.compensate_missing_success_attempts()
+        self.assertEqual(1, inserted)
+
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT source_mode, final_status, success_flag, linked_account_email,
+                       linked_account_created_at, proxy_name, legacy_backfill
+                FROM registration_attempts
+                WHERE linked_account_email = ?
+                """,
+                ("missing@example.com",),
+            ).fetchone()
+
+        self.assertEqual("success_compensation", row[0])
+        self.assertEqual("success", row[1])
+        self.assertEqual(1, row[2])
+        self.assertEqual("missing@example.com", row[3])
+        self.assertEqual("2026-04-18 10:00:00", row[4])
+        self.assertEqual("AR-01", row[5])
+        self.assertEqual(0, row[6])
 
     def test_overview_and_distribution_include_phone_binding_metrics_and_history_gap(self):
         run_id = self.history.start_run(source_mode="normal", target_count=0, trigger_source="unit-test")

@@ -185,6 +185,17 @@ def _history_event(
 ) -> None:
     attempt_id = _analytics_attempt_id(run_ctx)
     if not attempt_id:
+        registration_history.buffer_pending_event(
+            run_ctx,
+            event_type=event_type,
+            phase=phase,
+            ok_flag=ok_flag,
+            http_status=http_status,
+            reason_code=reason_code,
+            message=message,
+            url_key=url_key,
+            snapshot=snapshot,
+        )
         return
     registration_history.record_attempt_event(
         attempt_id,
@@ -202,8 +213,26 @@ def _history_event(
 def _history_patch(run_ctx: Optional[dict], **fields: Any) -> None:
     attempt_id = _analytics_attempt_id(run_ctx)
     if not attempt_id:
+        registration_history.buffer_pending_patch(run_ctx, **fields)
         return
     registration_history.patch_attempt(attempt_id, **fields)
+
+
+def _record_pending_account_registration(
+        *,
+        email: str,
+        password: str,
+        run_ctx: Optional[dict] = None,
+) -> None:
+    _history_patch(run_ctx, account_registered_flag=1)
+    _history_event(
+        run_ctx,
+        event_type="account_registered_pending_token",
+        phase="account",
+        ok_flag=True,
+        message=str(email or "").strip().lower(),
+        snapshot={"has_password": bool(password)},
+    )
 
 
 def _set_failure(
@@ -1239,13 +1268,12 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                 wait_time = random.randint(cfg.LOGIN_DELAY_MIN, cfg.LOGIN_DELAY_MAX)
                 print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）账号已通过，等待 {wait_time} 秒后同步最终状态...")
                 if cfg.SAVE_TO_LOCAL_IN_CPA_MODE:
-                    # if not is_takeover and password != "Takeover_NoPassword":
-                    try:
-                        from utils import db_manager
-                        db_manager.save_account_to_db(email, password, '{"status": "仅注册成功"}')
-                        print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）账号已注册成功，提前作为半成品写入本地库。")
-                    except Exception as e:
-                        pass
+                    _record_pending_account_registration(
+                        email=email,
+                        password=password,
+                        run_ctx=run_ctx,
+                    )
+                    print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）账号已注册成功，已写入历史待补全最终 Token。")
                 time.sleep(wait_time)
 
                 workspace_hint_url = ""

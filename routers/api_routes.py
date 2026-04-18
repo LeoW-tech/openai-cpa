@@ -474,6 +474,25 @@ async def get_analytics_attempt_events(
     return {"status": "success", "data": registration_history.list_attempt_events(attempt_id)}
 
 
+@router.get("/api/analytics/coverage-audit")
+async def get_analytics_coverage_audit(
+        started_from: Optional[str] = Query(None),
+        started_to: Optional[str] = Query(None),
+        source_mode: Optional[str] = Query(None),
+        proxy_name: Optional[str] = Query(None),
+        email_domain: Optional[str] = Query(None),
+        token: str = Depends(verify_token),
+):
+    filters = {
+        "started_from": started_from,
+        "started_to": started_to,
+        "source_mode": source_mode,
+        "proxy_name": proxy_name,
+        "email_domain": email_domain,
+    }
+    return {"status": "success", "data": registration_history.list_coverage_audit(filters)}
+
+
 @router.get("/api/analytics/export")
 async def export_analytics_attempts(
         export_format: str = Query("json"),
@@ -1261,7 +1280,10 @@ def ext_submit_result(req: ExtResultReq, token: str = Depends(verify_token)):
         )
         saved_ok = db_manager.save_account_to_db(req.email, req.password, token_json)
         if attempt_id:
-            registration_history.patch_attempt(attempt_id, local_save_ok=1 if saved_ok else 0)
+            patch_payload = {"local_save_ok": 1 if saved_ok else 0}
+            if saved_ok:
+                patch_payload["linked_account_created_at"] = db_manager.get_account_created_at(req.email)
+            registration_history.patch_attempt(attempt_id, **patch_payload)
         core_engine.run_stats['success'] = core_engine.run_stats.get('success', 0) + 1
 
         return {"status": "success", "message": "战利品已入库"}

@@ -106,6 +106,37 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
         self.assertEqual(1, kwargs["phone_otp_entered_flag"])
         self.assertEqual(1, kwargs["phone_otp_success_flag"])
 
+    def test_handle_registration_result_ensures_attempt_before_local_save(self):
+        core_engine = self._reload_core_engine()
+        result = (json.dumps({"email": "demo@example.com"}), "unit-test-pass")
+        calls = []
+
+        def _ensure_attempt(run_ctx, **kwargs):
+            calls.append(("ensure", kwargs["source_mode"], kwargs["proxy_name"]))
+            run_ctx["analytics_attempt_id"] = 778
+            return 778
+
+        def _save_account(email, password, token_data):
+            calls.append(("save", email))
+            return True
+
+        with patch.object(core_engine.registration_history, "ensure_attempt", side_effect=_ensure_attempt) as ensure_attempt:
+            with patch.object(core_engine.registration_history, "finish_attempt") as finish_attempt:
+                with patch.object(core_engine.db_manager, "save_account_to_db", side_effect=_save_account):
+                    with patch.object(core_engine, "send_tg_msg_sync"):
+                        with patch.object(core_engine.mail_service, "get_last_email", return_value="demo@example.com"):
+                            status = core_engine.handle_registration_result(
+                                result,
+                                cpa_upload=False,
+                                run_ctx={"sub2api_proxy_name": "JP-02"},
+                            )
+
+        self.assertEqual("success", status)
+        self.assertEqual(2, ensure_attempt.call_count)
+        self.assertEqual(("ensure", "normal", "JP-02"), calls[0])
+        self.assertEqual(("save", "demo@example.com"), calls[1])
+        self.assertEqual(778, finish_attempt.call_args.args[0])
+
     def test_ext_submit_result_records_history_for_legacy_payload(self):
         api_routes = self._reload_api_routes()
         demo_password = "unit-test-pass"
@@ -139,7 +170,7 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
 
         self.assertEqual("success", result["status"])
         record_extension_result.assert_called_once()
-        patch_attempt.assert_called_once_with(123, local_save_ok=1)
+        patch_attempt.assert_called_once_with(123, local_save_ok=1, linked_account_created_at="")
         call_req = record_extension_result.call_args.args[0]
         self.assertEqual("TASK-1", call_req.task_id)
         self.assertEqual("demo@example.com", call_req.email)
@@ -182,7 +213,7 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
 
         self.assertEqual("success", result["status"])
         record_extension_result.assert_called_once()
-        patch_attempt.assert_called_once_with(456, local_save_ok=1)
+        patch_attempt.assert_called_once_with(456, local_save_ok=1, linked_account_created_at="")
         self.assertEqual(("history", json.dumps({"email": "demo@example.com"})), calls[0])
         self.assertEqual(("save", json.dumps({"email": "demo@example.com"})), calls[1])
 
@@ -214,6 +245,37 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
         record_cluster.assert_called_once()
         self.assertEqual(payload, record_cluster.call_args.args[0])
         self.assertEqual("NODE-2", record_cluster.call_args.kwargs["node_name"])
+
+    def test_coverage_audit_endpoint_returns_history_audit_rows(self):
+        api_routes = self._reload_api_routes()
+        fake_rows = {
+            "accounts_total": 2,
+            "missing_total": 1,
+            "rows": [
+                {
+                    "email": "missing@example.com",
+                    "created_at": "2026-04-18 10:00:00",
+                    "match_status": "missing",
+                }
+            ],
+        }
+
+        with patch.object(api_routes.registration_history, "list_coverage_audit", return_value=fake_rows) as audit:
+            result = api_routes.get_analytics_coverage_audit(
+                started_from="2026-04-18 00:00:00",
+                started_to="2026-04-18 23:59:59",
+                source_mode=None,
+                proxy_name=None,
+                email_domain=None,
+                token="demo-token",
+            )
+            if hasattr(result, "__await__"):
+                import asyncio
+                result = asyncio.run(result)
+
+        self.assertEqual("success", result["status"])
+        self.assertEqual(fake_rows, result["data"])
+        audit.assert_called_once()
 
 
 if __name__ == "__main__":
