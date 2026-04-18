@@ -487,6 +487,10 @@ def get_email_and_token(proxies: Any = None) -> tuple:
     if ai_switch_on:
         print(f"[{cfg.ts()}] [AI-状态] 已开启 （{mask_email(email_str)}） AI 智能邮箱域名信息增强...")
 
+    if mode == "Gmail_OAuth":
+        print(f"[{cfg.ts()}] [INFO] Gmail OAuth 模式生成注册邮箱: {mask_email(email_str)}")
+        return email_str, ""
+
     if mode == "cloudmail":
         token = get_cm_token(mail_proxies)
         if not token:

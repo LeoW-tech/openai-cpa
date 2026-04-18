@@ -780,7 +780,13 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                 _set_failure(run_ctx, stage="net_check", message=str(e))
                 return None, None
 
-        email, email_jwt = get_email_and_token(proxies)
+        email_result = get_email_and_token(proxies)
+        if not isinstance(email_result, (tuple, list)) or len(email_result) < 2:
+            print(f"[{cfg.ts()}] [ERROR] 邮箱模块返回值非法: {email_result!r}")
+            _set_failure(run_ctx, stage="email_acquire", message="email provider returned invalid result")
+            return None, None
+
+        email, email_jwt = email_result[0], email_result[1]
         if not email:
             _set_failure(run_ctx, stage="email_acquire", message="email acquire failed")
             return None, None
