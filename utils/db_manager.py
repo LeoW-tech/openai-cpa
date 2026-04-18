@@ -401,11 +401,20 @@ def get_accounts_page(page: int = 1, page_size: int = 50) -> dict:
             total = c.fetchone()[0]
 
             offset = (page - 1) * page_size
-            execute_sql(c, "SELECT email, password, created_at FROM accounts ORDER BY id DESC LIMIT ? OFFSET ?",
+            execute_sql(c, "SELECT email, password, created_at, token_data FROM accounts ORDER BY id DESC LIMIT ? OFFSET ?",
                         (page_size, offset))
             rows = c.fetchall()
 
-            data = [{"email": r[0], "password": r[1], "created_at": r[2]} for r in rows]
+            data = [
+                {
+                    "email": r[0],
+                    "password": r[1],
+                    "created_at": r[2],
+                    "status": "有凭证" if '"access_token"' in str(r[3] or "") else (
+                        "仅注册成功" if '"仅注册成功"' in str(r[3] or "") else "未知")
+                }
+                for r in rows
+            ]
             return {"total": total, "data": data}
     except Exception as e:
         print(f"[{ts()}] [ERROR] 分页获取账号列表失败: {e}")
@@ -614,3 +623,40 @@ def clear_retry_master_status(email: str):
             execute_sql(c, "UPDATE local_mailboxes SET retry_master = 0 WHERE email = ?", (email,))
     except Exception as e:
         print(f"[{ts()}] [DB_ERROR] 清除 {email} 的 retry_master 状态失败: {e}")
+
+def get_all_accounts_raw() -> list:
+    """获取账号库所有原始数据"""
+    try:
+        with get_db_conn() as conn:
+            c = get_cursor(conn)
+            execute_sql(c, "SELECT email, password, token_data FROM accounts ORDER BY id DESC")
+            rows = c.fetchall()
+            return [{"email": r[0], "password": r[1], "token_data": json.loads(r[2]) if r[2] else {}} for r in rows]
+    except: return []
+
+def clear_all_accounts() -> bool:
+    """一键清空账号库"""
+    try:
+        with get_db_conn() as conn:
+            c = get_cursor(conn)
+            execute_sql(c, "DELETE FROM accounts")
+            return True
+    except: return False
+
+def get_all_mailboxes_raw() -> list:
+    """获取邮箱库所有原始数据"""
+    try:
+        with get_db_conn(as_dict=True) as conn:
+            c = get_cursor(conn, as_dict=True)
+            execute_sql(c, "SELECT * FROM local_mailboxes ORDER BY id DESC")
+            return [dict(r) for r in c.fetchall()]
+    except: return []
+
+def clear_all_mailboxes() -> bool:
+    """一键清空邮箱库"""
+    try:
+        with get_db_conn() as conn:
+            c = get_cursor(conn)
+            execute_sql(c, "DELETE FROM local_mailboxes")
+            return True
+    except: return False

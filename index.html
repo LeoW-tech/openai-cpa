@@ -398,36 +398,42 @@
                             </div>
                         </div>
                         <div v-show="currentTab === 'accounts'" class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                            <div class="px-5 md:px-8 py-5 md:py-6 border-b border-slate-100 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-slate-50/50">
-                                <div>
+                            <div class="px-5 md:px-8 py-4 border-b border-slate-100 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 bg-slate-50/50 min-h-[80px]">
+                                <div class="flex items-center gap-3">
                                     <h2 class="text-xl md:text-2xl font-black text-slate-800 tracking-tight">本地账号库</h2>
+                                    <button @click="fetchAccounts(true)" class="p-1.5 bg-white border border-slate-200 text-slate-500 rounded-lg hover:bg-slate-50 active:scale-95 transition-all shadow-sm" title="刷新列表">
+                                        🔄
+                                    </button>
                                 </div>
-                                <div class="flex flex-wrap gap-2 md:gap-3 justify-start lg:justify-end items-center w-full lg:w-auto">
-                                    <span class="text-sm md:text-base font-black text-indigo-600 bg-indigo-50 px-3 py-1 rounded-lg">已选 ({{ selectedAccounts.length }})</span>
-                                    <button @click="showAccountsPlaintext = !showAccountsPlaintext" class="text-xs md:text-sm bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm font-bold flex items-center gap-2">
+
+                                <div class="flex flex-wrap gap-3 items-center w-full xl:w-auto">
+                                    <button @click="showAccountsPlaintext = !showAccountsPlaintext" class="text-sm bg-white border border-slate-200 text-slate-600 px-3 py-1.5 rounded-lg hover:bg-slate-50 active:scale-95 transition shadow-sm font-bold flex items-center gap-1">
                                         <span>{{ showAccountsPlaintext ? '🙈' : '👁️' }}</span> {{ showAccountsPlaintext ? '脱敏' : '明文' }}
                                     </button>
-                                    <button @click="exportSelectedAccounts" :disabled="selectedAccounts.length === 0" class="text-xs md:text-sm bg-indigo-600 text-white px-4 md:px-5 py-2 rounded-xl hover:bg-indigo-700 active:scale-95 transition-all shadow-md shadow-indigo-500/20 disabled:opacity-50 font-bold flex items-center gap-2">
-                                        <span>📥</span> 导出 CPA
-                                    </button>
-                                    <button @click="exportSub2Api" :disabled="selectedAccounts.length === 0" class="text-xs md:text-sm bg-indigo-600 text-white px-4 md:px-5 py-2 rounded-xl hover:bg-indigo-700 active:scale-95 transition-all shadow-md shadow-indigo-500/20 disabled:opacity-50 font-bold flex items-center gap-2">
-                                        <span>📥</span> 导出 Sub2Api
-                                    </button>
-                                    <button @click="exportAccountsToTxt" :disabled="selectedAccounts.length === 0" class="text-xs md:text-sm bg-teal-600 text-white px-4 md:px-5 py-2 rounded-xl hover:bg-teal-700 active:scale-95 transition-all shadow-md shadow-teal-500/20 disabled:opacity-50 font-bold flex items-center gap-2">
-                                        <span>📄</span> 账密
-                                    </button>
-                                    <button @click="deleteSelectedAccounts" :disabled="selectedAccounts.length === 0" class="text-xs md:text-sm bg-rose-600 text-white px-4 md:px-5 py-2 rounded-xl hover:bg-rose-700 active:scale-95 transition-all shadow-md shadow-rose-500/20 disabled:opacity-50 font-bold flex items-center gap-2">
-                                        <span>🗑️</span> 删除
-                                    </button>
-                                    <button @click="bulkPushCPA" :disabled="selectedAccounts.length === 0" class="text-xs md:text-sm bg-emerald-600 text-white px-4 md:px-5 py-2 rounded-xl hover:bg-emerald-700 active:scale-95 transition-all shadow-md shadow-emerald-500/20 disabled:opacity-50 font-bold flex items-center gap-2">
-                                        <span>🚀</span> CPA
-                                    </button>
-                                    <button @click="bulkPushSub2API" :disabled="selectedAccounts.length === 0" class="text-xs md:text-sm bg-purple-600 text-white px-4 md:px-5 py-2 rounded-xl hover:bg-purple-700 active:scale-95 transition-all shadow-md shadow-purple-500/20 disabled:opacity-50 font-bold flex items-center gap-2">
-                                        <span>🛸</span> Sub
-                                    </button>
-                                    <button @click="fetchAccounts(true)" class="text-xs md:text-sm bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm font-bold flex items-center justify-center">
-                                        <span class="text-base">🔄</span>
-                                    </button>
+
+                                    <div v-if="selectedAccounts.length > 0" class="flex flex-wrap items-center gap-2 bg-indigo-50/80 border border-indigo-100 p-1.5 rounded-xl shadow-sm transition-all duration-300">
+                                        <span class="text-xs font-black text-indigo-700 px-2 border-r border-indigo-200">已选 {{ selectedAccounts.length }}</span>
+
+                                        <div class="flex items-center bg-white rounded-lg p-0.5 shadow-sm border border-slate-100">
+                                            <span class="text-[10px] text-slate-400 font-bold px-2">导出:</span>
+                                            <button @click="exportSelectedAccounts" class="px-2 py-1 text-xs font-bold text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded transition">CPA</button>
+                                            <button @click="exportSub2Api" class="px-2 py-1 text-xs font-bold text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded transition">Sub2Api</button>
+                                            <button @click="exportAccountsToTxt" class="px-2 py-1 text-xs font-bold text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded transition">账密</button>
+                                        </div>
+
+                                        <div class="flex items-center bg-white rounded-lg p-0.5 shadow-sm border border-slate-100">
+                                            <span class="text-[10px] text-slate-400 font-bold px-2">推送:</span>
+                                            <button @click="bulkPushCPA" class="px-2 py-1 text-xs font-bold text-emerald-600 hover:bg-emerald-50 rounded transition flex items-center"><span class="mr-1">🚀</span>CPA</button>
+                                            <button @click="bulkPushSub2API" class="px-2 py-1 text-xs font-bold text-purple-600 hover:bg-purple-50 rounded transition flex items-center"><span class="mr-1">🛸</span>Sub</button>
+                                        </div>
+
+                                        <button @click="deleteSelectedAccounts" class="px-3 py-1.5 bg-rose-500 text-white rounded-lg text-xs font-bold shadow-sm hover:bg-rose-600 transition ml-1">🗑️ 删除</button>
+                                    </div>
+
+                                    <div class="flex items-center gap-2 ml-auto xl:ml-2 border-l border-slate-200 pl-3">
+                                        <button @click="exportAllAccounts" class="px-3 py-1.5 bg-slate-200/70 text-slate-600 text-sm font-bold rounded-lg hover:bg-slate-300 transition flex items-center gap-1">📦 导出全部</button>
+                                        <button @click="clearAllAccounts" class="px-3 py-1.5 bg-rose-50 text-rose-600 border border-rose-200 text-sm font-bold rounded-lg hover:bg-rose-100 transition flex items-center gap-1">🗑️ 清空库</button>
+                                    </div>
                                 </div>
                             </div>
                             <div class="overflow-x-auto w-full">
@@ -439,6 +445,7 @@
                                             <th class="px-5 md:px-8 py-4 text-left text-[11px] font-black text-slate-400 uppercase tracking-widest min-w-[200px]">邮箱账号</th>
                                             <th class="px-5 md:px-8 py-4 text-left text-[11px] font-black text-slate-400 uppercase tracking-widest min-w-[150px]">登录密码</th>
                                             <th class="px-5 md:px-8 py-4 text-left text-[11px] font-black text-slate-400 uppercase tracking-widest min-w-[180px]">入库（北京时间）</th>
+                                            <th class="px-5 md:px-8 py-4 text-left text-[11px] font-black text-slate-400 uppercase tracking-widest min-w-[120px]">凭证状态</th>
                                             <th class="px-5 md:px-8 py-4 text-center text-[11px] font-black text-slate-400 uppercase tracking-widest min-w-[180px]">操作</th>
                                         </tr>
                                     </thead>
@@ -457,6 +464,17 @@
                                             </td>
                                             <td class="px-5 md:px-8 py-4 whitespace-nowrap text-sm text-slate-500 font-mono">
                                                 <span class="bg-slate-50 rounded-md px-2.5 py-1 border border-slate-100">{{ formatTime(acc.created_at) }}</span>
+                                            </td>
+                                            <td class="px-5 md:px-8 py-4 whitespace-nowrap">
+                                                <span v-if="acc.status === '有凭证'" class="px-2.5 py-1.5 text-[10px] font-black bg-emerald-50 text-emerald-600 rounded-md border border-emerald-200 shadow-sm flex items-center w-max gap-1">
+                                                    <span class="text-xs">✅</span> 完整凭证
+                                                </span>
+                                                <span v-else-if="acc.status === '仅注册成功'" class="px-2.5 py-1.5 text-[10px] font-black bg-amber-50 text-amber-600 rounded-md border border-amber-200 shadow-sm flex items-center w-max gap-1">
+                                                    <span class="text-xs">⚠️</span> 仅注册成功
+                                                </span>
+                                                <span v-else class="px-2.5 py-1.5 text-[10px] font-black bg-slate-50 text-slate-500 rounded-md border border-slate-200 shadow-sm flex items-center w-max gap-1">
+                                                    <span class="text-xs">❓</span> 未知状态
+                                                </span>
                                             </td>
                                             <td class="px-5 md:px-8 py-4 whitespace-nowrap text-center text-sm font-bold flex gap-2 justify-center">
                                                 <button @click="triggerAccountAction(acc, 'push')" class="text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-3 py-1.5 rounded-lg active:scale-95 transition-all shadow-sm">推CPA</button>
@@ -511,29 +529,33 @@
                                 </div>
                             </div>
 
-                            <div class="px-5 md:px-8 py-5 md:py-6 border-b border-slate-100 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-slate-50/50">
-                                <div><h2 class="text-xl md:text-2xl font-black text-slate-800 tracking-tight">微软邮箱资源库</h2></div>
-                                <div class="flex flex-wrap gap-2 md:gap-3 items-center">
-                                    <span class="text-sm md:text-base font-black text-sky-600 bg-sky-50 px-3 py-1 rounded-lg">已选 ({{ selectedMailboxes.length }})</span>
-                                    <button @click="showMailboxesPlaintext = !showMailboxesPlaintext" class="text-xs md:text-sm bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm font-bold flex items-center gap-2">
-                                        <span>{{ showMailboxesPlaintext ? '🙈' : '👁️' }}</span> {{ showMailboxesPlaintext ? '脱敏' : '明文' }}
-                                    </button>
-                                    <button @click="showImportMailboxModal = true" class="text-xs md:text-sm bg-sky-600 text-white px-4 md:px-5 py-2 rounded-xl hover:bg-sky-700 active:scale-95 transition-all shadow-md font-bold flex items-center gap-2">
-                                        <span>📥</span> 导入数据
-                                    </button>
-                                    <button @click="deleteSelectedMailboxes" :disabled="selectedMailboxes.length === 0" class="text-xs md:text-sm bg-rose-600 text-white px-4 md:px-5 py-2 rounded-xl hover:bg-rose-700 active:scale-95 transition-all shadow-md disabled:opacity-50 font-bold flex items-center gap-2">
-                                        <span>🗑️</span> 删除选中
-                                    </button>
-                                    <button @click="exportSelectedMailboxesToTxt" class="px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-bold shadow-md hover:bg-emerald-600 transition-colors flex items-center gap-2">
-                                        <span>📄 导出 TXT</span>
-                                    </button>
-
-                                    <button @click="recoverSelectedMailboxes" class="px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-bold shadow-md hover:bg-amber-600 transition-colors flex items-center gap-2">
-                                        <span>♻️ 恢复为正常状态</span>
-                                    </button>
-                                    <button @click="fetchMailboxes(true)" class="text-xs md:text-sm bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-xl hover:bg-slate-50 active:scale-95 transition-all shadow-sm font-bold">
+                            <div class="px-5 md:px-8 py-4 border-b border-slate-100 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 bg-slate-50/50 min-h-[80px]">
+                                <div class="flex items-center gap-3">
+                                    <h2 class="text-xl md:text-2xl font-black text-slate-800 tracking-tight">微软邮箱资源库</h2>
+                                    <button @click="fetchMailboxes(true)" class="p-1.5 bg-white border border-slate-200 text-slate-500 rounded-lg hover:bg-slate-50 active:scale-95 transition-all shadow-sm" title="刷新列表">
                                         🔄
                                     </button>
+                                </div>
+
+                                <div class="flex flex-wrap gap-3 items-center w-full xl:w-auto">
+                                    <button @click="showImportMailboxModal = true" class="text-sm bg-sky-50 text-sky-600 border border-sky-200 px-3 py-1.5 rounded-lg hover:bg-sky-100 active:scale-95 transition shadow-sm font-bold flex items-center gap-1">
+                                        📥 导入数据
+                                    </button>
+                                    <button @click="showMailboxesPlaintext = !showMailboxesPlaintext" class="text-sm bg-white border border-slate-200 text-slate-600 px-3 py-1.5 rounded-lg hover:bg-slate-50 active:scale-95 transition shadow-sm font-bold flex items-center gap-1">
+                                        <span>{{ showMailboxesPlaintext ? '🙈' : '👁️' }}</span> {{ showMailboxesPlaintext ? '脱敏' : '明文' }}
+                                    </button>
+
+                                    <div v-if="selectedMailboxes.length > 0" class="flex flex-wrap items-center gap-2 bg-indigo-50 border border-indigo-100 p-1.5 rounded-xl shadow-sm transition-all duration-300">
+                                        <span class="text-xs font-black text-indigo-600 px-2">已选 {{ selectedMailboxes.length }}</span>
+                                        <button @click="exportSelectedMailboxesToTxt" class="px-3 py-1 bg-white text-indigo-600 rounded-lg text-xs font-bold shadow-sm hover:bg-indigo-100 transition">📄 导出 TXT</button>
+                                        <button @click="recoverSelectedMailboxes" class="px-3 py-1 bg-white text-amber-600 rounded-lg text-xs font-bold shadow-sm hover:bg-amber-50 transition">♻️ 恢复正常</button>
+                                        <button @click="deleteSelectedMailboxes" class="px-3 py-1 bg-rose-500 text-white rounded-lg text-xs font-bold shadow-sm hover:bg-rose-600 transition">🗑️ 删除选中</button>
+                                    </div>
+
+                                    <div class="flex items-center gap-2 ml-auto xl:ml-2 border-l border-slate-200 pl-3">
+                                        <button @click="exportAllMailboxes" class="px-3 py-1.5 bg-slate-200/70 text-slate-600 text-sm font-bold rounded-lg hover:bg-slate-300 transition flex items-center gap-1">📦 导出全部</button>
+                                        <button @click="clearAllMailboxes" class="px-3 py-1.5 bg-rose-50 text-rose-600 border border-rose-200 text-sm font-bold rounded-lg hover:bg-rose-100 transition flex items-center gap-1">🗑️ 清空库</button>
+                                    </div>
                                 </div>
                             </div>
 
@@ -889,12 +911,30 @@
                                         <input type="text" v-model="config.local_microsoft.client_id" class="w-full appearance-none bg-slate-50 border border-slate-200 text-slate-700 rounded-lg py-2.5 px-3 shadow-inner font-mono text-sm" placeholder="如果导入的账号自带clientid这里则空着，如果你不想填也可以空着">
                                     </div>
 
-                                    <div v-if="config.local_microsoft.enable_fission" class="space-y-4 pt-4 border-t-2 border-dashed border-slate-100 animate-fade-in">
-                                        <div>
+                                    <div v-if="config.local_microsoft.enable_fission || config.local_microsoft.pool_fission" class="space-y-4 pt-4 border-t-2 border-dashed border-slate-100 animate-fade-in">
+                                        <div v-if="config.local_microsoft.enable_fission">
                                             <label class="block text-slate-700 text-xs font-extrabold mb-1.5 uppercase tracking-wider">裂变主邮箱账号</label>
                                             <input type="text" v-model="config.local_microsoft.master_email" class="w-full appearance-none bg-white border border-slate-200 text-slate-700 rounded-lg py-2.5 px-3 shadow-sm font-mono text-sm" placeholder="例如：example@outlook.com">
                                         </div>
                                         <div>
+                                            <label class="block text-slate-700 text-xs font-extrabold mb-1.5 uppercase tracking-wider">邮箱别名后缀生成模式</label>
+                                            <select v-model="config.local_microsoft.suffix_mode" class="w-full appearance-none bg-white border border-slate-200 text-slate-700 rounded-lg py-2.5 px-3 shadow-sm text-sm">
+                                                <option value="fixed">固定长度随机 (仅使用设置的最小长度)</option>
+                                                <option value="range">随机范围区间 (在最小与最大长度之间波动)</option>
+                                                <option value="mystic">高拟真模式 (英文名 + 单词 + 生日数字)</option>
+                                            </select>
+                                        </div>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-slate-700 text-xs font-extrabold mb-1.5 uppercase tracking-wider">别名最小长度 (8~32)</label>
+                                                <input type="number" min="8" max="32" v-model.number="config.local_microsoft.suffix_len_min" class="w-full appearance-none bg-white border border-slate-200 text-slate-700 rounded-lg py-2.5 px-3 shadow-sm font-mono text-sm">
+                                            </div>
+                                            <div>
+                                                <label class="block text-slate-700 text-xs font-extrabold mb-1.5 uppercase tracking-wider">别名最大长度 (8~32)</label>
+                                                <input type="number" min="8" max="32" v-model.number="config.local_microsoft.suffix_len_max" class="w-full appearance-none bg-white border border-slate-200 text-slate-700 rounded-lg py-2.5 px-3 shadow-sm font-mono text-sm">
+                                            </div>
+                                        </div>
+                                        <div v-if="config.local_microsoft.enable_fission">
                                             <div class="flex justify-between items-end mb-1.5">
                                                 <label class="block text-slate-700 text-xs font-extrabold uppercase tracking-wider">主邮箱 Refresh Token</label>
                                                 <button @click="openFissionAuthModal" class="text-[11px] font-black text-indigo-700 hover:text-white bg-indigo-100 hover:bg-indigo-600 px-2.5 py-1 rounded-md shadow-sm border border-indigo-200 transition-all active:scale-95">

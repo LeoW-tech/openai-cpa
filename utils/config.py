@@ -81,6 +81,7 @@ def init_config():
     return user_config
 
 _c: dict = {}
+WEB_PASSWORD: str = "admin"
 ENABLE_SUB_DOMAINS: bool = False
 SUB_DOMAIN_COUNT: int = 10
 EMAIL_API_MODE: str = ""
@@ -97,6 +98,9 @@ LOCAL_MS_MASTER_EMAIL: str = ""
 LOCAL_MS_PASSWORD: str = ""
 LOCAL_MS_CLIENT_ID: str = ""
 LOCAL_MS_REFRESH_TOKEN: str = ""
+LOCAL_MS_SUFFIX_MODE: str = "fixed"
+LOCAL_MS_SUFFIX_LEN_MIN: int = 8
+LOCAL_MS_SUFFIX_LEN_MAX: int = 8
 FREEMAIL_API_URL: str = ""
 FREEMAIL_API_TOKEN: str = ""
 CM_API_URL: str = ""
@@ -209,6 +213,7 @@ ANALYTICS_SNAPSHOT_MAX_BYTES: int = 4096
 
 def reload_all_configs(new_config_dict=None):
     global _c
+    global WEB_PASSWORD
     global EMAIL_API_MODE, MAIL_DOMAINS, GPTMAIL_BASE, ADMIN_AUTH
     global ENABLE_SUB_DOMAINS, SUB_DOMAIN_COUNT
     global IMAP_SERVER, IMAP_PORT, IMAP_USER, IMAP_PASS
@@ -249,6 +254,7 @@ def reload_all_configs(new_config_dict=None):
     global CLUSTER_NODE_NAME, CLUSTER_MASTER_URL, CLUSTER_SECRET
     global REG_MODE
     global LOCAL_MS_ENABLE_FISSION, LOCAL_MS_MASTER_EMAIL, LOCAL_MS_PASSWORD, LOCAL_MS_CLIENT_ID, LOCAL_MS_REFRESH_TOKEN, LOCAL_MS_POOL_FISSION
+    global LOCAL_MS_SUFFIX_MODE, LOCAL_MS_SUFFIX_LEN_MIN, LOCAL_MS_SUFFIX_LEN_MAX
     global DB_TYPE, MYSQL_CFG
     global MAX_LOG_LINES
     global ANALYTICS_ENABLED, ANALYTICS_CAPTURE_EVENTS, ANALYTICS_CAPTURE_IP_GEO
@@ -358,6 +364,8 @@ def reload_all_configs(new_config_dict=None):
                 group_ids.append(int(text))
         return group_ids
 
+    WEB_PASSWORD = str(_c.get("web_password", "admin")).strip()
+
     EMAIL_API_MODE = _c.get("email_api_mode", "cloudflare_temp_email")
     MAIL_DOMAINS = _c.get("mail_domains", "")
     GPTMAIL_BASE = str(_c.get("gptmail_base", "")).strip().rstrip("/")
@@ -375,6 +383,21 @@ def reload_all_configs(new_config_dict=None):
     LOCAL_MS_MASTER_EMAIL = str(_local_microsoft.get("master_email", "")).strip()
     LOCAL_MS_CLIENT_ID = str(_local_microsoft.get("client_id", "")).strip()
     LOCAL_MS_REFRESH_TOKEN = str(_local_microsoft.get("refresh_token", "")).strip()
+    LOCAL_MS_SUFFIX_MODE = str(_local_microsoft.get("suffix_mode", "fixed")).strip().lower()
+    if LOCAL_MS_SUFFIX_MODE not in {"fixed", "range", "mystic"}:
+        LOCAL_MS_SUFFIX_MODE = "fixed"
+    try:
+        LOCAL_MS_SUFFIX_LEN_MIN = int(_local_microsoft.get("suffix_len_min", 8) or 8)
+    except Exception:
+        LOCAL_MS_SUFFIX_LEN_MIN = 8
+    try:
+        LOCAL_MS_SUFFIX_LEN_MAX = int(_local_microsoft.get("suffix_len_max", LOCAL_MS_SUFFIX_LEN_MIN) or LOCAL_MS_SUFFIX_LEN_MIN)
+    except Exception:
+        LOCAL_MS_SUFFIX_LEN_MAX = LOCAL_MS_SUFFIX_LEN_MIN
+    LOCAL_MS_SUFFIX_LEN_MIN = max(8, min(32, LOCAL_MS_SUFFIX_LEN_MIN))
+    LOCAL_MS_SUFFIX_LEN_MAX = max(8, min(32, LOCAL_MS_SUFFIX_LEN_MAX))
+    if LOCAL_MS_SUFFIX_LEN_MAX < LOCAL_MS_SUFFIX_LEN_MIN:
+        LOCAL_MS_SUFFIX_LEN_MAX = LOCAL_MS_SUFFIX_LEN_MIN
 
     _free = _c.get("freemail", {})
     FREEMAIL_API_URL = str(_free.get("api_url", "")).strip().rstrip("/")

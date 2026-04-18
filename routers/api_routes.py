@@ -45,7 +45,23 @@ from utils.email_providers.gmail_oauth_handler import GmailOAuthHandler
 from curl_cffi import requests as cffi_requests
 from global_state import VALID_TOKENS, CLUSTER_NODES, NODE_COMMANDS, cluster_lock, log_history, engine, verify_token, worker_status
 import utils.config as cfg
+try:
+    import utils.integrations.clash_manager as clash_manager
+except Exception:
+    class _FallbackClashManager:
+        @staticmethod
+        def get_pool_status():
+            return {"error": "clash_manager unavailable"}
 
+        @staticmethod
+        def deploy_clash_pool(count):
+            return False, "clash_manager unavailable"
+
+        @staticmethod
+        def patch_and_update(sub_url, target):
+            return False, "clash_manager unavailable"
+
+    clash_manager = _FallbackClashManager()
 router = APIRouter()
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -153,15 +169,6 @@ class UpdateMailboxStatusReq(BaseModel):
 # ==========================================
 # 辅助函数
 # ==========================================
-def get_web_password():
-    try:
-        if os.path.exists(CONFIG_PATH):
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                c = yaml.safe_load(f) or {}
-                return str(c.get("web_password", "admin")).strip()
-    except Exception:
-        pass
-    return "admin"
 
 def parse_cpa_usage_to_details(raw_usage: dict) -> dict:
     details = {"is_cpa": True}
@@ -254,7 +261,8 @@ async def get_dashboard():
 
 @router.post("/api/login")
 async def login(data: LoginData):
-    if data.password == get_web_password():
+    current_password = getattr(core_engine.cfg, "WEB_PASSWORD", "admin")
+    if data.password == current_password:
         token = secrets.token_hex(16)
         VALID_TOKENS.add(token)
         return {"status": "success", "token": token}
@@ -543,6 +551,38 @@ async def restart_system(token: str = Depends(verify_token)):
     except Exception as e:
         return {"status": "error", "message": f"重启异常: {str(e)}"}
 
+def _sanitize_local_microsoft_config(local_ms: Any) -> dict:
+    data = dict(local_ms) if isinstance(local_ms, dict) else {}
+    data.setdefault("enable_fission", False)
+    data.setdefault("pool_fission", False)
+    data.setdefault("master_email", "")
+    data.setdefault("client_id", "")
+    data.setdefault("refresh_token", "")
+
+    mode = str(data.get("suffix_mode", "fixed") or "fixed").strip().lower()
+    if mode not in {"fixed", "range", "mystic"}:
+        mode = "fixed"
+
+    try:
+        min_len = int(data.get("suffix_len_min", 8) or 8)
+    except Exception:
+        min_len = 8
+    try:
+        max_len = int(data.get("suffix_len_max", min_len) or min_len)
+    except Exception:
+        max_len = min_len
+
+    min_len = max(8, min(32, min_len))
+    max_len = max(8, min(32, max_len))
+    if max_len < min_len:
+        max_len = min_len
+
+    data["suffix_mode"] = mode
+    data["suffix_len_min"] = min_len
+    data["suffix_len_max"] = max_len
+    return data
+
+
 @router.get("/api/config")
 async def get_config(token: str = Depends(verify_token)):
     config_data = getattr(core_engine.cfg, '_c', {}).copy()
@@ -551,14 +591,8 @@ async def get_config(token: str = Depends(verify_token)):
         config_data["sub2api_mode"].pop("min_remaining_weekly_percent", None)
     if isinstance(config_data.get("hero_sms"), dict):
         config_data["hero_sms"].pop("reuse_max_uses", None)
-    config_data["web_password"] = config_data.get("web_password", "admin")
-    if "local_microsoft" not in config_data:
-        config_data["local_microsoft"] = {
-            "enable_fission": False,
-            "master_email": "",
-            "client_id": "",
-            "refresh_token": ""
-        }
+    config_data["web_password"] = getattr(core_engine.cfg, "WEB_PASSWORD", config_data.get("web_password", "admin"))
+    config_data["local_microsoft"] = _sanitize_local_microsoft_config(config_data.get("local_microsoft"))
     return config_data
 
 
@@ -569,6 +603,7 @@ async def save_config(new_config: dict, token: str = Depends(verify_token)):
             new_config["sub2api_mode"].pop("min_remaining_weekly_percent", None)
         if isinstance(new_config.get("hero_sms"), dict):
             new_config["hero_sms"].pop("reuse_max_uses", None)
+        new_config["local_microsoft"] = _sanitize_local_microsoft_config(new_config.get("local_microsoft"))
         reload_all_configs(new_config_dict=new_config)
 
         return {"status": "success", "message": "✅ 配置已成功保存并同步至云端！"}
@@ -1426,24 +1461,6 @@ async def update_mailboxes_status(req: UpdateMailboxStatusReq, token: str = Depe
 
     return {"status": "success", "message": f"成功将 {success_count} 个邮箱状态重置！"}
 
-try:
-    import utils.integrations.clash_manager as clash_manager
-except ImportError:
-    class _FallbackClashManager:
-        @staticmethod
-        def get_pool_status():
-            return {"error": "clash_manager unavailable"}
-
-        @staticmethod
-        def deploy_clash_pool(count):
-            return False, "clash_manager unavailable"
-
-        @staticmethod
-        def patch_and_update(sub_url, target):
-            return False, "clash_manager unavailable"
-
-    clash_manager = _FallbackClashManager()
-
 class ClashDeployReq(BaseModel):
     count: int
 
@@ -1501,3 +1518,24 @@ def parse_sub2api_proxy(proxy_url: str):
         return proxy_dict
     except:
         return None
+@router.post("/api/accounts/export_all")
+async def export_all_accounts(token: str = Depends(verify_token)):
+    data = db_manager.get_all_accounts_raw()
+    return {"status": "success", "data": data}
+
+@router.post("/api/accounts/clear_all")
+async def clear_all_accounts_api(token: str = Depends(verify_token)):
+    if db_manager.clear_all_accounts():
+        return {"status": "success", "message": "账号库已全部清空"}
+    return {"status": "error", "message": "清空失败"}
+
+@router.post("/api/mailboxes/export_all")
+async def export_all_mailboxes(token: str = Depends(verify_token)):
+    data = db_manager.get_all_mailboxes_raw()
+    return {"status": "success", "data": data}
+
+@router.post("/api/mailboxes/clear_all")
+async def clear_all_mailboxes_api(token: str = Depends(verify_token)):
+    if db_manager.clear_all_mailboxes():
+        return {"status": "success", "message": "邮箱库已全部清空"}
+    return {"status": "error", "message": "清空失败"}
