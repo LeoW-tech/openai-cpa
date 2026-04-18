@@ -137,19 +137,18 @@ class LocalMicrosoftService:
             with _fission_lock:
                 excluded_emails: set[str] = set()
                 while True:
-                    mailbox_batch = db_manager.get_mailboxes_for_pool_fission(limit=10, exclude_emails=list(excluded_emails))
-                    if not mailbox_batch:
+                    mailbox_data = db_manager.get_mailbox_for_pool_fission(exclude_emails=list(excluded_emails))
+                    if not mailbox_data:
                         break
 
-                    for mailbox_data in mailbox_batch:
-                        mailbox = self._build_strict_fission_mailbox(mailbox_data, mailbox_id=mailbox_data.get("id"))
-                        if mailbox:
-                            return mailbox
-                        mailbox_email = str(mailbox_data.get("email") or "").strip().lower()
-                        if mailbox_email:
-                            excluded_emails.add(mailbox_email)
-                    if len(mailbox_batch) < 10:
-                        break
+                    mailbox = self._build_strict_fission_mailbox(mailbox_data, mailbox_id=mailbox_data.get("id"))
+                    if mailbox:
+                        return mailbox
+
+                    mailbox_email = str(mailbox_data.get("email") or "").strip().lower()
+                    if mailbox_email:
+                        excluded_emails.add(mailbox_email)
+            return None
         mailbox = db_manager.get_and_lock_unused_local_mailbox()
         if mailbox:
             res = dict(mailbox)

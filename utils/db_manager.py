@@ -584,18 +584,8 @@ def get_and_lock_unused_local_mailbox() -> dict:
         return None
 
 
-def get_mailbox_for_pool_fission() -> dict:
-    """带重试优先级的并发取号"""
-    rows = get_mailboxes_for_pool_fission(limit=1)
-    return rows[0] if rows else None
-
-
-def get_mailboxes_for_pool_fission(limit: int = 10, exclude_emails: list[str] | None = None) -> list[dict]:
-    """按裂变优先级批量取号，优先返回 retry_master=1 的主号。"""
-    try:
-        limit = max(1, int(limit or 1))
-    except Exception:
-        limit = 1
+def get_mailbox_for_pool_fission(exclude_emails: list[str] | None = None) -> dict:
+    """带重试优先级的并发取号，每次只推进一个主号的轮转计数。"""
     normalized_excludes = []
     for email in exclude_emails or []:
         text = str(email or "").strip().lower()
@@ -612,12 +602,11 @@ def get_mailboxes_for_pool_fission(limit: int = 10, exclude_emails: list[str] | 
                 where_clauses.append(f"LOWER(email) NOT IN ({placeholders})")
                 params.extend(normalized_excludes)
             where_sql = " AND ".join(where_clauses)
-            limit_sql = max(1, limit)
             select_sql = (
                 "SELECT * FROM local_mailboxes "
                 f"WHERE {where_sql} "
                 "ORDER BY retry_master DESC, fission_count ASC, id ASC "
-                f"LIMIT {limit_sql}"
+                "LIMIT 1"
             )
             if DB_TYPE == "mysql":
                 execute_sql(c, "START TRANSACTION")
@@ -626,22 +615,43 @@ def get_mailboxes_for_pool_fission(limit: int = 10, exclude_emails: list[str] | 
                 execute_sql(c, "BEGIN EXCLUSIVE")
                 execute_sql(c, select_sql, tuple(params))
 
-            rows = c.fetchall() or []
-            if not rows:
-                return []
+            row = c.fetchone()
+            if not row:
+                return None
 
-            row_ids = [row["id"] for row in rows if row["id"] is not None]
-            if row_ids:
-                placeholders = ", ".join(["?"] * len(row_ids))
+            row_id = row["id"]
+            if row_id is not None:
                 execute_sql(
                     c,
-                    f"UPDATE local_mailboxes SET fission_count = fission_count + 1 WHERE id IN ({placeholders})",
-                    tuple(row_ids),
+                    "UPDATE local_mailboxes SET fission_count = fission_count + 1 WHERE id = ?",
+                    (row_id,),
                 )
-            return [dict(row) for row in rows]
+            return dict(row)
     except Exception as e:
         print(f"[{ts()}] [DB_ERROR] 提取失败: {e}")
-        return []
+        return None
+
+
+def get_mailboxes_for_pool_fission(limit: int = 10, exclude_emails: list[str] | None = None) -> list[dict]:
+    """兼容接口：按单邮箱轮转语义连续取多个候选。"""
+    try:
+        limit = max(1, int(limit or 1))
+    except Exception:
+        limit = 1
+
+    excluded = {
+        str(email or "").strip().lower()
+        for email in (exclude_emails or [])
+        if str(email or "").strip()
+    }
+    rows = []
+    for _ in range(limit):
+        row = get_mailbox_for_pool_fission(exclude_emails=list(excluded))
+        if not row:
+            break
+        rows.append(row)
+        excluded.add(str(row.get("email") or "").strip().lower())
+    return rows
 
 
 def update_local_mailbox_status(email: str, status: int):
