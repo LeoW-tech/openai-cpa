@@ -131,6 +131,9 @@ def _pick_switchable_nodes(valid_nodes, current_node):
 
 def _is_leaf_proxy(proxies_data, proxy_name):
     """只允许切换真实代理节点，避免把策略组误当作出口。"""
+    normalized_name = str(proxy_name or "").strip().upper()
+    if normalized_name in {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPAT"}:
+        return False
     item = proxies_data.get(proxy_name, {})
     proxy_type = str(item.get("type") or "").strip().lower()
     if "all" in item:
