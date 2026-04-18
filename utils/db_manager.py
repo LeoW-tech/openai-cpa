@@ -605,7 +605,7 @@ def get_mailbox_for_pool_fission(exclude_emails: list[str] | None = None) -> dic
             select_sql = (
                 "SELECT * FROM local_mailboxes "
                 f"WHERE {where_sql} "
-                "ORDER BY retry_master DESC, fission_count ASC, id ASC "
+                "ORDER BY fission_count ASC, id ASC "
                 "LIMIT 1"
             )
             if DB_TYPE == "mysql":

@@ -23,7 +23,7 @@ class DbManagerPoolFissionTests(unittest.TestCase):
         finally:
             stack.close()
 
-    def test_get_mailbox_for_pool_fission_prioritizes_retry_master_then_fission_count(self):
+    def test_get_mailbox_for_pool_fission_ignores_retry_master_when_fission_count_is_higher(self):
         with self._temp_db_context() as db_path:
             with sqlite3.connect(db_path) as conn:
                 conn.executemany(
@@ -43,7 +43,7 @@ class DbManagerPoolFissionTests(unittest.TestCase):
             row = db_manager.get_mailbox_for_pool_fission()
 
             self.assertIsNotNone(row)
-            self.assertEqual("retry@example.com", row["email"])
+            self.assertEqual("normal-low@example.com", row["email"])
 
     def test_get_mailbox_for_pool_fission_rotates_to_next_mailbox_on_second_pick(self):
         with self._temp_db_context() as db_path:
@@ -88,25 +88,33 @@ class DbManagerPoolFissionTests(unittest.TestCase):
             self.assertIsNotNone(row)
             self.assertEqual("fallback@example.com", row["email"])
 
-    def test_update_pool_fission_result_keeps_retry_master_for_alias_retry(self):
+    def test_update_pool_fission_result_keeps_retry_master_record_but_not_selection_priority(self):
         with self._temp_db_context() as db_path:
             with sqlite3.connect(db_path) as conn:
-                conn.execute(
+                conn.executemany(
                     """
                     INSERT INTO local_mailboxes (
                         email, password, client_id, refresh_token, status, fission_count, retry_master
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("retry@example.com", "pw", "cid", "rt", 0, 0, 0),
+                    [
+                        ("retry@example.com", "pw", "cid", "rt", 0, 5, 0),
+                        ("fresh@example.com", "pw", "cid2", "rt2", 0, 0, 0),
+                    ],
                 )
                 conn.commit()
 
             db_manager.update_pool_fission_result("retry@example.com", is_blocked=True, is_raw=False)
             row = db_manager.get_mailbox_for_pool_fission()
+            with sqlite3.connect(db_path) as conn:
+                retry_flag = conn.execute(
+                    "SELECT retry_master FROM local_mailboxes WHERE email = ?",
+                    ("retry@example.com",),
+                ).fetchone()[0]
 
             self.assertIsNotNone(row)
-            self.assertEqual("retry@example.com", row["email"])
-            self.assertEqual(1, row["retry_master"])
+            self.assertEqual("fresh@example.com", row["email"])
+            self.assertEqual(1, retry_flag)
 
 
 if __name__ == "__main__":
