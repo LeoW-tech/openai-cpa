@@ -34,16 +34,16 @@ admin
 
 - `upstream`：官方仓库 `https://github.com/wenfxl/openai-cpa.git`
 - `origin`：你自己的 fork `https://github.com/LeoW-tech/openai-cpa.git`
-- `upgrade/v10.1.5-custom`：当前正式使用中的定制开发分支，也是本地 Docker 镜像默认应基于的代码
-- `backup/pre-v10.1.5-local`：升级前的本地备份分支，只保留做兜底，不作为日常开发分支
+- `main`：当前正式使用中的本地主开发分支，也是本地 Docker 镜像默认应基于的代码
+- `upstream-main`：专门镜像官方 `upstream/main` 的观察分支，只用于对齐和观察官方开发进度
 
 日常开发建议：
 
-- 平时优先在 `upgrade/v10.1.5-custom` 上继续改
-- 如果一次改动比较大，建议从 `upgrade/v10.1.5-custom` 再切一个功能分支，例如 `feat/xxx` 或 `fix/xxx`
-- 不要在 `backup/pre-v10.1.5-local` 上继续开发
+- 平时统一在 `main` 上继续改，或从 `main` 切功能分支，例如 `feat/xxx` 或 `fix/xxx`
+- 不要直接在 `upstream-main` 上开发，它只用于观察和同步官方进度
 - 不要直接在 `upstream/main` 上开发
-- `origin/main` 暂时视为你 fork 上的干净主线，不作为当前定制版的日常开发入口
+- `origin/main` 与本地 `main` 保持一致，作为你 fork 上的正式主线
+- `origin/upstream-main` 与本地 `upstream-main` 保持一致，作为官方观察线
 
 ## 数据和配置位置
 
@@ -71,7 +71,7 @@ admin
 - 默认密码先用 `admin`
 - 主要维护方式优先使用本地 Docker 容器 `openai-cpa-local`
 - 配置文件统一改 `data/config.yaml`
-- 当前默认开发分支是 `upgrade/v10.1.5-custom`
-- 官方更新一律从 `upstream` 拉，不直接拿 `origin/main` 当官方基线
+- 当前默认开发分支是 `main`
+- 官方更新一律从 `upstream/main` 拉，本地观察分支统一使用 `upstream-main`
 - 日常推送优先推到你自己的 fork，也就是 `origin`
 - 所有命令都默认从项目根目录执行
