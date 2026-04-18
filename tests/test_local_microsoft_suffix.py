@@ -95,6 +95,16 @@ class LocalMicrosoftSuffixTests(unittest.TestCase):
             suffix = self.service.generate_suffix_v2(user_part=("a" * 63))
         self.assertEqual("", suffix)
 
+    def test_suffix_uses_remaining_space_even_when_below_minimum_length(self):
+        with self._patch_cfg(
+            LOCAL_MS_SUFFIX_MODE="fixed",
+            LOCAL_MS_SUFFIX_LEN_MIN=8,
+            LOCAL_MS_SUFFIX_LEN_MAX=8,
+        ):
+            suffix = self.service.generate_suffix_v2(user_part=("a" * 61))
+        self.assertEqual(2, len(suffix))
+        self.assertRegex(suffix, r"^[0-9a-f]+$")
+
     def test_manual_fission_uses_configured_suffix_mode(self):
         with self._patch_cfg(
             LOCAL_MS_ENABLE_FISSION=True,
@@ -113,7 +123,7 @@ class LocalMicrosoftSuffixTests(unittest.TestCase):
         self.assertEqual(10, len(suffix))
         self.assertRegex(suffix, r"^[0-9a-f]+$")
 
-    def test_manual_fission_falls_back_to_master_when_suffix_cannot_fit(self):
+    def test_manual_fission_returns_none_when_suffix_cannot_fit(self):
         master_email = ("a" * 63) + "@outlook.com"
         with self._patch_cfg(
             LOCAL_MS_ENABLE_FISSION=True,
@@ -125,17 +135,16 @@ class LocalMicrosoftSuffixTests(unittest.TestCase):
             LOCAL_MS_SUFFIX_LEN_MAX=32,
         ):
             mailbox = self.service.get_unused_mailbox()
-        self.assertIsNotNone(mailbox)
-        self.assertEqual(master_email, mailbox["email"])
+        self.assertIsNone(mailbox)
 
     def test_pool_fission_uses_configured_suffix_mode(self):
-        pool_mailbox = {
+        pool_mailboxes = [{
             "id": 100,
             "email": "seed@outlook.com",
             "retry_master": 0,
             "client_id": "pool-client",
             "refresh_token": "pool-rt",
-        }
+        }]
         with self._patch_cfg(
             LOCAL_MS_POOL_FISSION=True,
             LOCAL_MS_SUFFIX_MODE="fixed",
@@ -143,8 +152,8 @@ class LocalMicrosoftSuffixTests(unittest.TestCase):
             LOCAL_MS_SUFFIX_LEN_MAX=9,
         ):
             with patch(
-                "utils.email_providers.local_microsoft_service.db_manager.get_mailbox_for_pool_fission",
-                return_value=pool_mailbox,
+                "utils.email_providers.local_microsoft_service.db_manager.get_mailboxes_for_pool_fission",
+                return_value=pool_mailboxes,
             ):
                 mailbox = self.service.get_unused_mailbox()
         self.assertIsNotNone(mailbox)
@@ -154,15 +163,48 @@ class LocalMicrosoftSuffixTests(unittest.TestCase):
         self.assertEqual(9, len(suffix))
         self.assertRegex(suffix, r"^[0-9a-f]+$")
 
-    def test_pool_fission_falls_back_to_master_when_suffix_cannot_fit(self):
-        master_email = ("a" * 63) + "@outlook.com"
-        pool_mailbox = {
-            "id": 101,
-            "email": master_email,
-            "retry_master": 0,
+    def test_pool_fission_retry_master_still_returns_alias(self):
+        pool_mailboxes = [{
+            "id": 100,
+            "email": "seed@outlook.com",
+            "retry_master": 1,
             "client_id": "pool-client",
             "refresh_token": "pool-rt",
-        }
+        }]
+        with self._patch_cfg(
+            LOCAL_MS_POOL_FISSION=True,
+            LOCAL_MS_SUFFIX_MODE="fixed",
+            LOCAL_MS_SUFFIX_LEN_MIN=9,
+            LOCAL_MS_SUFFIX_LEN_MAX=9,
+        ):
+            with patch(
+                "utils.email_providers.local_microsoft_service.db_manager.get_mailboxes_for_pool_fission",
+                return_value=pool_mailboxes,
+            ):
+                mailbox = self.service.get_unused_mailbox()
+        self.assertIsNotNone(mailbox)
+        self.assertIn("+", mailbox["email"])
+        self.assertEqual("seed@outlook.com", mailbox["master_email"])
+        self.assertFalse(mailbox["is_raw_trial"])
+
+    def test_pool_fission_skips_unusable_mailbox_and_uses_next_candidate(self):
+        master_email = ("a" * 63) + "@outlook.com"
+        pool_mailboxes = [
+            {
+                "id": 101,
+                "email": master_email,
+                "retry_master": 1,
+                "client_id": "pool-client",
+                "refresh_token": "pool-rt",
+            },
+            {
+                "id": 102,
+                "email": "usable@outlook.com",
+                "retry_master": 0,
+                "client_id": "pool-client-2",
+                "refresh_token": "pool-rt-2",
+            },
+        ]
         with self._patch_cfg(
             LOCAL_MS_POOL_FISSION=True,
             LOCAL_MS_SUFFIX_MODE="range",
@@ -170,12 +212,44 @@ class LocalMicrosoftSuffixTests(unittest.TestCase):
             LOCAL_MS_SUFFIX_LEN_MAX=32,
         ):
             with patch(
-                "utils.email_providers.local_microsoft_service.db_manager.get_mailbox_for_pool_fission",
-                return_value=pool_mailbox,
+                "utils.email_providers.local_microsoft_service.db_manager.get_mailboxes_for_pool_fission",
+                return_value=pool_mailboxes,
             ):
                 mailbox = self.service.get_unused_mailbox()
         self.assertIsNotNone(mailbox)
-        self.assertEqual(master_email, mailbox["email"])
+        self.assertTrue(mailbox["email"].startswith("usable+"))
+        self.assertEqual("usable@outlook.com", mailbox["master_email"])
+
+    def test_pool_fission_returns_none_when_all_candidates_are_unusable(self):
+        master_email = ("a" * 63) + "@outlook.com"
+        pool_mailboxes = [
+            {
+                "id": 101,
+                "email": master_email,
+                "retry_master": 1,
+                "client_id": "pool-client",
+                "refresh_token": "pool-rt",
+            },
+            {
+                "id": 102,
+                "email": master_email.replace("@", "b@"),
+                "retry_master": 0,
+                "client_id": "pool-client-2",
+                "refresh_token": "pool-rt-2",
+            },
+        ]
+        with self._patch_cfg(
+            LOCAL_MS_POOL_FISSION=True,
+            LOCAL_MS_SUFFIX_MODE="range",
+            LOCAL_MS_SUFFIX_LEN_MIN=8,
+            LOCAL_MS_SUFFIX_LEN_MAX=32,
+        ):
+            with patch(
+                "utils.email_providers.local_microsoft_service.db_manager.get_mailboxes_for_pool_fission",
+                return_value=pool_mailboxes,
+            ):
+                mailbox = self.service.get_unused_mailbox()
+        self.assertIsNone(mailbox)
 
 
 if __name__ == "__main__":

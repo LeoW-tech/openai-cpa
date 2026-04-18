@@ -55,6 +55,8 @@ local_microsoft:
   master_email: ""
   client_id: ""
   refresh_token: ""
+  # suffix_len_min / suffix_len_max 只控制后缀长度范围；
+  # 是否能生成别名主要取决于主邮箱本地名是否还有 "+后缀" 的可用空间。
   suffix_mode: "fixed"
   suffix_len_min: 8
   suffix_len_max: 8

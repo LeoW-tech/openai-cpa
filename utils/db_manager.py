@@ -586,34 +586,62 @@ def get_and_lock_unused_local_mailbox() -> dict:
 
 def get_mailbox_for_pool_fission() -> dict:
     """带重试优先级的并发取号"""
+    rows = get_mailboxes_for_pool_fission(limit=1)
+    return rows[0] if rows else None
+
+
+def get_mailboxes_for_pool_fission(limit: int = 10, exclude_emails: list[str] | None = None) -> list[dict]:
+    """按裂变优先级批量取号，优先返回 retry_master=1 的主号。"""
+    try:
+        limit = max(1, int(limit or 1))
+    except Exception:
+        limit = 1
+    normalized_excludes = []
+    for email in exclude_emails or []:
+        text = str(email or "").strip().lower()
+        if text:
+            normalized_excludes.append(text)
+
     try:
         with get_db_conn(as_dict=True) as conn:
             c = get_cursor(conn, as_dict=True)
+            where_clauses = ["status = 0"]
+            params: list[Any] = []
+            if normalized_excludes:
+                placeholders = ", ".join(["?"] * len(normalized_excludes))
+                where_clauses.append(f"LOWER(email) NOT IN ({placeholders})")
+                params.extend(normalized_excludes)
+            where_sql = " AND ".join(where_clauses)
+            limit_sql = max(1, limit)
+            select_sql = (
+                "SELECT * FROM local_mailboxes "
+                f"WHERE {where_sql} "
+                "ORDER BY retry_master DESC, fission_count ASC, id ASC "
+                f"LIMIT {limit_sql}"
+            )
             if DB_TYPE == "mysql":
                 execute_sql(c, "START TRANSACTION")
-                execute_sql(c, "SELECT * FROM local_mailboxes WHERE status = 0 AND retry_master = 1 LIMIT 1 FOR UPDATE")
+                execute_sql(c, select_sql + " FOR UPDATE", tuple(params))
             else:
                 execute_sql(c, "BEGIN EXCLUSIVE")
-                execute_sql(c, "SELECT * FROM local_mailboxes WHERE status = 0 AND retry_master = 1 LIMIT 1")
+                execute_sql(c, select_sql, tuple(params))
 
-            row = c.fetchone()
+            rows = c.fetchall() or []
+            if not rows:
+                return []
 
-            if not row:
-                if DB_TYPE == "mysql":
-                    execute_sql(c,
-                                "SELECT * FROM local_mailboxes WHERE status = 0 ORDER BY fission_count ASC LIMIT 1 FOR UPDATE")
-                else:
-                    execute_sql(c, "SELECT * FROM local_mailboxes WHERE status = 0 ORDER BY fission_count ASC LIMIT 1")
-                row = c.fetchone()
-
-            if row:
-                execute_sql(c, "UPDATE local_mailboxes SET fission_count = fission_count + 1 WHERE id = ?",
-                            (row['id'],))
-                return dict(row)
-            return None
+            row_ids = [row["id"] for row in rows if row["id"] is not None]
+            if row_ids:
+                placeholders = ", ".join(["?"] * len(row_ids))
+                execute_sql(
+                    c,
+                    f"UPDATE local_mailboxes SET fission_count = fission_count + 1 WHERE id IN ({placeholders})",
+                    tuple(row_ids),
+                )
+            return [dict(row) for row in rows]
     except Exception as e:
         print(f"[{ts()}] [DB_ERROR] 提取失败: {e}")
-        return None
+        return []
 
 
 def update_local_mailbox_status(email: str, status: int):

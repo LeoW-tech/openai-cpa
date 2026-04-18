@@ -95,48 +95,61 @@ class LocalMicrosoftService:
 
         return self._random_hex(target_len)
 
+    def _build_strict_fission_mailbox(self, mailbox_data: dict, mailbox_id: Any) -> Optional[dict]:
+        master_email = str(mailbox_data.get("email") or "").strip()
+        if not master_email or "@" not in master_email:
+            return None
+
+        user_part, domain_part = master_email.split("@", 1)
+        random_suffix = self.generate_suffix_v2(user_part=user_part)
+        if not random_suffix:
+            return None
+
+        target_email = f"{user_part}+{random_suffix}@{domain_part}"
+        return {
+            "id": mailbox_id,
+            "email": target_email,
+            "master_email": master_email,
+            "is_raw_trial": False,
+            "client_id": mailbox_data.get("client_id", ""),
+            "refresh_token": mailbox_data.get("refresh_token", ""),
+            "assigned_at": time.time()
+        }
+
     def get_unused_mailbox(self) -> Optional[dict]:
         """核心逻辑"""
         if getattr(cfg, "LOCAL_MS_ENABLE_FISSION", False):
             master_email = getattr(cfg, "LOCAL_MS_MASTER_EMAIL", "").strip()
             if master_email and "@" in master_email:
-                user_part, domain_part = master_email.split("@", 1)
-                random_suffix = self.generate_suffix_v2(user_part=user_part)
-                target_email = f"{user_part}+{random_suffix}@{domain_part}" if random_suffix else master_email
-                return {
-                    "id": "manual_config",
-                    "email": target_email,
-                    "master_email": master_email,
-                    "is_raw_trial": False,
-                    "client_id": getattr(cfg, "LOCAL_MS_CLIENT_ID", ""),
-                    "refresh_token": getattr(cfg, "LOCAL_MS_REFRESH_TOKEN", ""),
-                    "assigned_at": time.time()
-                }
+                mailbox = self._build_strict_fission_mailbox(
+                    {
+                        "email": master_email,
+                        "client_id": getattr(cfg, "LOCAL_MS_CLIENT_ID", ""),
+                        "refresh_token": getattr(cfg, "LOCAL_MS_REFRESH_TOKEN", ""),
+                    },
+                    mailbox_id="manual_config",
+                )
+                if mailbox:
+                    return mailbox
+                return None
 
         if getattr(cfg, "LOCAL_MS_POOL_FISSION", False):
             with _fission_lock:
-                mailbox_data = db_manager.get_mailbox_for_pool_fission()
-                if mailbox_data:
-                    master_email = mailbox_data["email"]
-                    is_raw = (mailbox_data.get("retry_master") == 1)
+                excluded_emails: set[str] = set()
+                while True:
+                    mailbox_batch = db_manager.get_mailboxes_for_pool_fission(limit=10, exclude_emails=list(excluded_emails))
+                    if not mailbox_batch:
+                        break
 
-                    if is_raw:
-                        target_email = master_email
-                        db_manager.clear_retry_master_status(master_email)
-                    else:
-                        user_part, domain_part = master_email.split("@", 1)
-                        random_suffix = self.generate_suffix_v2(user_part=user_part)
-                        target_email = f"{user_part}+{random_suffix}@{domain_part}" if random_suffix else master_email
-
-                    return {
-                        "id": mailbox_data["id"],
-                        "email": target_email,
-                        "master_email": master_email,
-                        "is_raw_trial": is_raw,
-                        "client_id": mailbox_data.get("client_id", ""),
-                        "refresh_token": mailbox_data.get("refresh_token", ""),
-                        "assigned_at": time.time()
-                    }
+                    for mailbox_data in mailbox_batch:
+                        mailbox = self._build_strict_fission_mailbox(mailbox_data, mailbox_id=mailbox_data.get("id"))
+                        if mailbox:
+                            return mailbox
+                        mailbox_email = str(mailbox_data.get("email") or "").strip().lower()
+                        if mailbox_email:
+                            excluded_emails.add(mailbox_email)
+                    if len(mailbox_batch) < 10:
+                        break
         mailbox = db_manager.get_and_lock_unused_local_mailbox()
         if mailbox:
             res = dict(mailbox)
