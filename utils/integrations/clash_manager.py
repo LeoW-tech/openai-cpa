@@ -48,6 +48,10 @@ def _pool_secret():
     return str(_load_runtime_config().get("clash_proxy_pool", {}).get("secret", "")).strip()
 
 
+def _pool_group_name():
+    return str(_load_runtime_config().get("clash_proxy_pool", {}).get("group_name", "")).strip()
+
+
 def _instance_name(index):
     return f"clash_{index}"
 
@@ -61,18 +65,178 @@ def _config_file(base_path, name):
 
 
 def _default_config():
-    config = {
-        "allow-lan": True,
-        "mixed-port": INSTANCE_PROXY_PORT,
-        "external-controller": f"0.0.0.0:{INSTANCE_CONTROLLER_PORT}",
-    }
+    return _apply_runtime_patch(
+        {
+            "allow-lan": True,
+            "mixed-port": INSTANCE_PROXY_PORT,
+            "external-controller": f"0.0.0.0:{INSTANCE_CONTROLLER_PORT}",
+        }
+    )
+
+
+def _apply_runtime_patch(config):
+    patched = copy.deepcopy(config or {})
+    patched.update(
+        {
+            "allow-lan": True,
+            "mixed-port": INSTANCE_PROXY_PORT,
+            "external-controller": f"0.0.0.0:{INSTANCE_CONTROLLER_PORT}",
+        }
+    )
+
     secret = _pool_secret()
     if secret:
-        config["secret"] = secret
-    return config
+        patched["secret"] = secret
+    else:
+        patched.pop("secret", None)
+
+    return patched
 
 
-def _ensure_config_file(base_path, name):
+def _load_yaml_file(path):
+    if not os.path.isfile(path):
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return yaml.safe_load(fh) or {}
+    except Exception:
+        return None
+
+
+def _write_yaml_file(path, data):
+    with open(path, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False)
+
+
+def _is_subscription_config(config):
+    if not isinstance(config, dict):
+        return False
+    groups = config.get("proxy-groups") or []
+    return isinstance(groups, list) and len(groups) > 0
+
+
+def _config_has_target_group(config, group_keyword):
+    keyword = str(group_keyword or "").strip()
+    if not keyword or not isinstance(config, dict):
+        return False
+
+    for group in config.get("proxy-groups") or []:
+        group_name = str(group.get("name") or "").strip()
+        if keyword in group_name:
+            return True
+
+    return False
+
+
+def _extract_groups(config):
+    if not isinstance(config, dict):
+        return []
+
+    groups = []
+    for group in config.get("proxy-groups") or []:
+        proxies = group.get("proxies") or []
+        groups.append(
+            {
+                "name": group.get("name", "N/A"),
+                "count": len(proxies) if isinstance(proxies, list) else 0,
+                "type": group.get("type", "N/A"),
+            }
+        )
+    return groups
+
+
+def _instance_sort_key(name):
+    try:
+        return int(str(name).split("_")[1])
+    except Exception:
+        return 999999
+
+
+def _discover_subscription_template(base_path):
+    if not os.path.isdir(base_path):
+        return None
+
+    candidate_names = sorted(
+        [name for name in os.listdir(base_path) if name.startswith("clash_")],
+        key=_instance_sort_key,
+    )
+
+    for name in candidate_names:
+        config = _load_yaml_file(_config_file(base_path, name))
+        if _is_subscription_config(config):
+            return config
+
+    return None
+
+
+def _collect_config_health(base_path, instance_names):
+    group_keyword = _pool_group_name()
+    ordered_names = sorted(list(instance_names), key=_instance_sort_key)
+    groups = []
+    instance_status = {}
+    missing_config = []
+    missing_group = []
+    with_group = []
+
+    for name in ordered_names:
+        cfg_path = _config_file(base_path, name)
+        config = _load_yaml_file(cfg_path)
+        config_exists = config is not None
+        has_subscription_config = _is_subscription_config(config)
+        has_target_group = _config_has_target_group(config, group_keyword) if group_keyword else None
+
+        if not groups and has_subscription_config:
+            groups = _extract_groups(config)
+
+        if not config_exists:
+            missing_config.append(name)
+        elif group_keyword and not has_target_group:
+            missing_group.append(name)
+        elif group_keyword and has_target_group:
+            with_group.append(name)
+
+        instance_status[name] = {
+            "config_exists": config_exists,
+            "has_subscription_config": has_subscription_config,
+            "has_target_group": has_target_group,
+            "config_path": cfg_path,
+        }
+
+    health = {
+        "expected_group_name": group_keyword,
+        "instances_missing_config": missing_config,
+        "instances_missing_group": missing_group,
+        "instances_with_target_group": with_group,
+        "instances_with_target_group_count": len(with_group),
+        "total_instances": len(ordered_names),
+    }
+    return instance_status, groups, health
+
+
+def _build_deploy_warning_message(count, health):
+    warnings = []
+
+    if health["instances_missing_config"]:
+        warnings.append(
+            "以下实例缺少配置文件: " + ", ".join(health["instances_missing_config"])
+        )
+
+    expected_group = health.get("expected_group_name")
+    if expected_group and health["instances_missing_group"]:
+        warnings.append(
+            f"以下实例尚未包含策略组 '{expected_group}': "
+            + ", ".join(health["instances_missing_group"])
+            + "，请执行订阅更新"
+        )
+
+    message = f"成功同步 {count} 个实例"
+    if warnings:
+        message += "；警告：" + "；".join(warnings)
+    return message
+
+
+def _ensure_config_file(base_path, name, template_config=None):
     inst_dir = _instance_dir(base_path, name)
     cfg_file = _config_file(base_path, name)
     os.makedirs(inst_dir, exist_ok=True)
@@ -80,15 +244,18 @@ def _ensure_config_file(base_path, name):
     if os.path.isdir(cfg_file):
         raise ValueError(f"{cfg_file} 是目录，无法作为 Mihomo 配置文件使用")
 
-    if not os.path.exists(cfg_file):
-        with open(cfg_file, "w", encoding="utf-8") as fh:
-            yaml.safe_dump(_default_config(), fh, allow_unicode=True, sort_keys=False)
+    current_config = _load_yaml_file(cfg_file) if os.path.exists(cfg_file) else None
+    should_seed_from_template = template_config is not None and not _is_subscription_config(current_config)
+
+    if should_seed_from_template:
+        _write_yaml_file(cfg_file, _apply_runtime_patch(template_config))
+    elif current_config is None:
+        _write_yaml_file(cfg_file, _default_config())
 
     if not os.path.isfile(cfg_file):
         raise ValueError(f"{cfg_file} 不存在或不可读")
 
     return inst_dir, cfg_file
-
 
 def _desired_ports(index):
     return {
@@ -183,30 +350,27 @@ def get_pool_status():
     if not client:
         return {"instances": [], "groups": [], "error": "Docker 套接字未挂载"}
 
+    containers = _sorted_clash_containers(client)
+    instance_names = [c.name for c in containers]
+    config_status, groups, health = _collect_config_health(BASE_PATH, instance_names)
+
     instances = []
-    for c in _sorted_clash_containers(client):
+    for c in containers:
         p_map = c.attrs.get("HostConfig", {}).get("PortBindings", {})
         ports = [f"{b[0]['HostPort']}->{p.split('/')[0]}" for p, b in p_map.items() if b]
-        instances.append({"name": c.name, "status": c.status, "ports": ", ".join(ports)})
+        status = config_status.get(c.name, {})
+        instances.append(
+            {
+                "name": c.name,
+                "status": c.status,
+                "ports": ", ".join(ports),
+                "config_exists": status.get("config_exists", False),
+                "has_subscription_config": status.get("has_subscription_config", False),
+                "has_target_group": status.get("has_target_group"),
+            }
+        )
 
-    groups = []
-    sample_cfg = os.path.join(BASE_PATH, "clash_1", "config.yaml")
-    if os.path.isfile(sample_cfg):
-        try:
-            with open(sample_cfg, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-            for g in data.get("proxy-groups", []):
-                groups.append(
-                    {
-                        "name": g.get("name", "N/A"),
-                        "count": len(g.get("proxies", [])),
-                        "type": g.get("type", "N/A"),
-                    }
-                )
-        except Exception:
-            pass
-
-    return {"instances": instances, "groups": groups}
+    return {"instances": instances, "groups": groups, "health": health}
 
 
 def deploy_clash_pool(count):
@@ -215,6 +379,7 @@ def deploy_clash_pool(count):
         return False, "Docker未就绪"
 
     host_base_path = _host_base_path(client)
+    template_config = _discover_subscription_template(BASE_PATH)
 
     for container in _sorted_clash_containers(client):
         try:
@@ -226,7 +391,7 @@ def deploy_clash_pool(count):
     for i in range(1, count + 1):
         name = _instance_name(i)
         try:
-            _ensure_config_file(BASE_PATH, name)
+            _ensure_config_file(BASE_PATH, name, template_config=template_config)
         except ValueError as exc:
             return False, str(exc)
 
@@ -255,7 +420,11 @@ def deploy_clash_pool(count):
                 volumes=_desired_volumes(name, host_base_path),
             )
 
-    return True, f"成功同步 {count} 个实例"
+    _, _, health = _collect_config_health(
+        BASE_PATH,
+        [_instance_name(i) for i in range(1, count + 1)],
+    )
+    return True, _build_deploy_warning_message(count, health)
 
 
 def patch_and_update(url, target):
@@ -277,7 +446,6 @@ def patch_and_update(url, target):
             return False, "当前没有 Clash 实例，请先同步实例"
 
         indices = [int(item.name.split("_")[1]) for item in containers] if target == "all" else [int(target)]
-        secret = _pool_secret()
 
         for i in indices:
             name = _instance_name(i)
@@ -286,19 +454,7 @@ def patch_and_update(url, target):
             except ValueError as exc:
                 return False, str(exc)
 
-            patched = copy.deepcopy(raw_yaml)
-            patched.update(
-                {
-                    "mixed-port": INSTANCE_PROXY_PORT,
-                    "allow-lan": True,
-                    "external-controller": f"0.0.0.0:{INSTANCE_CONTROLLER_PORT}",
-                }
-            )
-            if secret:
-                patched["secret"] = secret
-
-            with open(_config_file(BASE_PATH, name), "w", encoding="utf-8") as fh:
-                yaml.safe_dump(patched, fh, allow_unicode=True, sort_keys=False)
+            _write_yaml_file(_config_file(BASE_PATH, name), _apply_runtime_patch(raw_yaml))
 
             try:
                 client.containers.get(name).restart()

@@ -138,7 +138,14 @@ createApp({
                 target: 'all',
                 count: 5,
                 instances: [],
-                groups: []
+                groups: [],
+                health: {
+                    expected_group_name: '',
+                    instances_missing_group: [],
+                    instances_missing_config: [],
+                    instances_with_target_group_count: 0,
+                    total_instances: 0
+                }
             },
         };
     },
@@ -2069,6 +2076,13 @@ createApp({
                 if (d.status === 'success') {
                     this.clashPool.instances = d.data.instances;
                     this.clashPool.groups = d.data.groups;
+                    this.clashPool.health = d.data.health || {
+                        expected_group_name: '',
+                        instances_missing_group: [],
+                        instances_missing_config: [],
+                        instances_with_target_group_count: 0,
+                        total_instances: 0
+                    };
                     if (this.clashPool.instances.length > 0) {
                         this.clashPool.count = this.clashPool.instances.length;
                     }

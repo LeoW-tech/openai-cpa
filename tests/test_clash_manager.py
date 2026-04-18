@@ -95,6 +95,7 @@ class ClashManagerTests(unittest.TestCase):
                 {
                     "clash_proxy_pool": {
                         "secret": "unit-test-secret",
+                        "group_name": "🔰 选择节点",
                     }
                 },
                 allow_unicode=True,
@@ -130,6 +131,49 @@ class ClashManagerTests(unittest.TestCase):
             first_call["volumes"],
         )
         self.assertTrue((self.base_path / "clash_1" / "config.yaml").is_file())
+        cfg = yaml.safe_load((self.base_path / "clash_1" / "config.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(7890, cfg["mixed-port"])
+        self.assertEqual("0.0.0.0:9090", cfg["external-controller"])
+        self.assertEqual("unit-test-secret", cfg["secret"])
+        self.assertNotIn("proxy-groups", cfg)
+
+    def test_deploy_clash_pool_copies_existing_subscription_template_to_new_instances(self):
+        client = FakeClient([FakeContainer("clash_1")])
+        clash_1_dir = self.base_path / "clash_1"
+        clash_1_dir.mkdir(parents=True, exist_ok=True)
+        (clash_1_dir / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "mixed-port": 9999,
+                    "external-controller": "127.0.0.1:9990",
+                    "proxy-groups": [{"name": "🔰 选择节点", "type": "select", "proxies": ["A"]}],
+                    "proxies": [{"name": "A", "type": "ss", "server": "a.example.com", "port": 443, "cipher": "aes-256-gcm", "password": "x"}],
+                },
+                allow_unicode=True,
+            ),
+            encoding="utf-8",
+        )
+
+        with self._patch_paths(), patch.object(clash_manager, "get_client", return_value=client):
+            success, message = clash_manager.deploy_clash_pool(2)
+
+        self.assertTrue(success, message)
+        cfg = yaml.safe_load((self.base_path / "clash_2" / "config.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(7890, cfg["mixed-port"])
+        self.assertEqual("0.0.0.0:9090", cfg["external-controller"])
+        self.assertEqual("unit-test-secret", cfg["secret"])
+        self.assertEqual("🔰 选择节点", cfg["proxy-groups"][0]["name"])
+        self.assertEqual("A", cfg["proxies"][0]["name"])
+
+    def test_deploy_clash_pool_warns_when_target_group_missing_after_sync(self):
+        client = FakeClient()
+
+        with self._patch_paths(), patch.object(clash_manager, "get_client", return_value=client):
+            success, message = clash_manager.deploy_clash_pool(1)
+
+        self.assertTrue(success, message)
+        self.assertIn("🔰 选择节点", message)
+        self.assertIn("请执行订阅更新", message)
 
     def test_deploy_clash_pool_rejects_directory_config_path(self):
         client = FakeClient()
@@ -203,6 +247,55 @@ class ClashManagerTests(unittest.TestCase):
             },
             first_call["volumes"],
         )
+
+    def test_get_pool_status_reports_per_instance_config_health(self):
+        existing = [
+            FakeContainer("clash_1", ports={"7890/tcp": [{"HostPort": "41001"}], "9090/tcp": [{"HostPort": "42001"}]}),
+            FakeContainer("clash_2", ports={"7890/tcp": [{"HostPort": "41002"}], "9090/tcp": [{"HostPort": "42002"}]}),
+        ]
+        client = FakeClient(existing)
+
+        clash_1_dir = self.base_path / "clash_1"
+        clash_1_dir.mkdir(parents=True, exist_ok=True)
+        (clash_1_dir / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "proxy-groups": [{"name": "🔰 选择节点", "type": "select", "proxies": ["A"]}],
+                    "proxies": [{"name": "A", "type": "ss", "server": "a.example.com", "port": 443, "cipher": "aes-256-gcm", "password": "x"}],
+                },
+                allow_unicode=True,
+            ),
+            encoding="utf-8",
+        )
+
+        clash_2_dir = self.base_path / "clash_2"
+        clash_2_dir.mkdir(parents=True, exist_ok=True)
+        (clash_2_dir / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "allow-lan": True,
+                    "mixed-port": 7890,
+                    "external-controller": "0.0.0.0:9090",
+                },
+                allow_unicode=True,
+            ),
+            encoding="utf-8",
+        )
+
+        with self._patch_paths(), patch.object(clash_manager, "get_client", return_value=client):
+            result = clash_manager.get_pool_status()
+
+        self.assertEqual(["clash_2"], result["health"]["instances_missing_group"])
+        self.assertEqual([], result["health"]["instances_missing_config"])
+        self.assertEqual("🔰 选择节点", result["health"]["expected_group_name"])
+        self.assertEqual(1, result["health"]["instances_with_target_group_count"])
+        self.assertEqual("🔰 选择节点", result["groups"][0]["name"])
+        clash_1_status = next(item for item in result["instances"] if item["name"] == "clash_1")
+        clash_2_status = next(item for item in result["instances"] if item["name"] == "clash_2")
+        self.assertTrue(clash_1_status["config_exists"])
+        self.assertTrue(clash_1_status["has_target_group"])
+        self.assertTrue(clash_2_status["config_exists"])
+        self.assertFalse(clash_2_status["has_target_group"])
 
 
 if __name__ == "__main__":
