@@ -1,6 +1,8 @@
 import csv
+import hashlib
 import io
 import json
+import re
 import socket
 import time
 from datetime import datetime, timedelta
@@ -114,6 +116,88 @@ def _normalize_filters(filters: Optional[dict]) -> dict:
     return dict(filters or {})
 
 
+_CALLING_CODE_META: list[tuple[str, dict[str, str]]] = [
+    ("+852", {"iso": "HK", "country_name": "Hong Kong"}),
+    ("+380", {"iso": "UA", "country_name": "Ukraine"}),
+    ("+82", {"iso": "KR", "country_name": "South Korea"}),
+    ("+81", {"iso": "JP", "country_name": "Japan"}),
+    ("+65", {"iso": "SG", "country_name": "Singapore"}),
+    ("+61", {"iso": "AU", "country_name": "Australia"}),
+    ("+54", {"iso": "AR", "country_name": "Argentina"}),
+    ("+49", {"iso": "DE", "country_name": "Germany"}),
+    ("+44", {"iso": "GB", "country_name": "United Kingdom"}),
+    ("+33", {"iso": "FR", "country_name": "France"}),
+    ("+1", {"iso": "US", "country_name": "United States"}),
+]
+
+_HERO_COUNTRY_META: dict[int, dict[str, str]] = {
+    52: {"calling_code": "+66", "iso": "TH", "country_name": "Thailand"},
+    50: {"calling_code": "+1", "iso": "US", "country_name": "United States"},
+    16: {"calling_code": "+44", "iso": "GB", "country_name": "United Kingdom"},
+}
+
+
+def normalize_phone_fields(
+        phone_number: str,
+        *,
+        country_id: Any = None,
+        country_name_hint: str = "",
+) -> dict[str, str]:
+    raw = str(phone_number or "").strip()
+    if not raw:
+        return {
+            "phone_number_full": "",
+            "phone_number_e164": "",
+            "phone_country_calling_code": "",
+            "phone_country_iso": "",
+            "phone_country_name": str(country_name_hint or "").strip(),
+            "phone_national_number": "",
+        }
+
+    digits = re.sub(r"\D", "", raw)
+    e164 = f"+{digits}" if digits else ""
+    calling_code = ""
+    iso = ""
+    country_name = str(country_name_hint or "").strip()
+    national_number = digits
+
+    for code, meta in _CALLING_CODE_META:
+        if e164.startswith(code):
+            calling_code = code
+            iso = meta["iso"]
+            country_name = meta["country_name"]
+            national_number = digits[len(code) - 1:]
+            break
+
+    if (not calling_code or not iso) and country_id not in (None, ""):
+        try:
+            fallback = _HERO_COUNTRY_META.get(int(country_id))
+        except (TypeError, ValueError):
+            fallback = None
+        if fallback:
+            calling_code = calling_code or fallback["calling_code"]
+            iso = iso or fallback["iso"]
+            country_name = country_name or fallback["country_name"]
+            if digits and calling_code:
+                code_digits = calling_code.lstrip("+")
+                if digits.startswith(code_digits):
+                    national_number = digits[len(code_digits):]
+
+    return {
+        "phone_number_full": raw,
+        "phone_number_e164": e164,
+        "phone_country_calling_code": calling_code,
+        "phone_country_iso": iso,
+        "phone_country_name": country_name,
+        "phone_national_number": national_number,
+    }
+
+
+def _token_fingerprint(token_data: Any) -> str:
+    raw = token_data if isinstance(token_data, str) else _json_dumps(token_data)
+    return hashlib.sha1(str(raw or "").encode("utf-8")).hexdigest()
+
+
 def _build_where_clause(filters: Optional[dict]) -> tuple[str, list[Any]]:
     normalized = _normalize_filters(filters)
     clauses: list[str] = []
@@ -129,6 +213,11 @@ def _build_where_clause(filters: Optional[dict]) -> tuple[str, list[Any]]:
         "flow_type": "flow_type = ?",
         "task_id": "task_id = ?",
         "worker_id": "worker_id = ?",
+        "phone_country_iso": "phone_country_iso = ?",
+        "phone_country_calling_code": "phone_country_calling_code = ?",
+        "phone_number_e164": "phone_number_e164 = ?",
+        "phone_bind_provider": "phone_bind_provider = ?",
+        "phone_bind_stage": "phone_bind_stage = ?",
     }
     for key, sql in mapping.items():
         value = normalized.get(key)
@@ -141,6 +230,9 @@ def _build_where_clause(filters: Optional[dict]) -> tuple[str, list[Any]]:
         "phone_gate_hit_flag": "phone_gate_hit_flag = ?",
         "phone_otp_entered_flag": "phone_otp_entered_flag = ?",
         "phone_otp_success_flag": "phone_otp_success_flag = ?",
+        "phone_bind_attempted_flag": "phone_bind_attempted_flag = ?",
+        "phone_bind_success_flag": "phone_bind_success_flag = ?",
+        "phone_bind_failed_flag": "phone_bind_failed_flag = ?",
     }
     for key, sql in bool_mapping.items():
         value = normalized.get(key)
@@ -272,6 +364,9 @@ def start_attempt(
         task_id: str = "",
         worker_id: str = "",
         source_mode: str = "",
+        source_node_name: str = "",
+        external_attempt_id: str = "",
+        token_fingerprint: str = "",
         attempt_no: int = 1,
         flow_type: str = "register",
         email: str = "",
@@ -299,18 +394,22 @@ def start_attempt(
                 cursor,
                 """
                 INSERT INTO registration_attempts (
-                    run_id, task_id, worker_id, source_mode, attempt_no, flow_type,
+                    run_id, task_id, worker_id, source_mode, source_node_name, external_attempt_id, token_fingerprint,
+                    attempt_no, flow_type,
                     legacy_backfill, linked_account_email, linked_account_created_at,
                     email_full, email_local_part, email_domain, master_email,
                     email_provider_type, email_provider_detail, proxy_url, proxy_name,
                     started_at, final_status, labels_json, metrics_json, result_snapshot_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(run_id or 0),
                     str(task_id or "").strip(),
                     str(worker_id or "").strip(),
                     str(source_mode or "").strip(),
+                    str(source_node_name or "").strip(),
+                    str(external_attempt_id or "").strip(),
+                    str(token_fingerprint or "").strip(),
                     int(attempt_no or 1),
                     str(flow_type or "register").strip(),
                     0,
@@ -367,6 +466,7 @@ def patch_attempt(attempt_id: int, **fields: Any) -> bool:
             "phone_reuse_used_flag", "success_flag", "retry_403_flag",
             "signup_blocked_flag", "pwd_blocked_flag", "phone_gate_hit_flag",
             "phone_otp_entered_flag", "phone_otp_success_flag",
+            "phone_bind_attempted_flag", "phone_bind_success_flag", "phone_bind_failed_flag",
         }:
             prepared[key] = _coerce_bool_int(value)
         elif key == "failure_message":
@@ -465,6 +565,9 @@ def finish_attempt(
         phone_gate_hit_flag: Optional[bool] = None,
         phone_otp_entered_flag: Optional[bool] = None,
         phone_otp_success_flag: Optional[bool] = None,
+        phone_bind_attempted_flag: Optional[bool] = None,
+        phone_bind_success_flag: Optional[bool] = None,
+        phone_bind_failed_flag: Optional[bool] = None,
 ) -> bool:
     payload: dict[str, Any] = {
         "finished_at": str(finished_at or _utc_now_str()),
@@ -505,6 +608,9 @@ def finish_attempt(
         "phone_gate_hit_flag": phone_gate_hit_flag,
         "phone_otp_entered_flag": phone_otp_entered_flag,
         "phone_otp_success_flag": phone_otp_success_flag,
+        "phone_bind_attempted_flag": phone_bind_attempted_flag,
+        "phone_bind_success_flag": phone_bind_success_flag,
+        "phone_bind_failed_flag": phone_bind_failed_flag,
     }
     for key, value in optional_flags.items():
         if value is not None:
@@ -751,8 +857,42 @@ def get_overview(filters: Optional[dict]) -> dict[str, Any]:
     phone_gate_hits = sum(int(row.get("phone_gate_hit_flag") or 0) for row in rows)
     phone_otp_entered = sum(int(row.get("phone_otp_entered_flag") or 0) for row in rows)
     phone_otp_success = sum(int(row.get("phone_otp_success_flag") or 0) for row in rows)
+    phone_bind_attempted = sum(int(row.get("phone_bind_attempted_flag") or 0) for row in rows)
+    phone_bind_success = sum(int(row.get("phone_bind_success_flag") or 0) for row in rows)
+    phone_bind_failed = sum(int(row.get("phone_bind_failed_flag") or 0) for row in rows)
+    cluster_import_successes = sum(
+        1 for row in rows
+        if str(row.get("source_mode") or "") == "cluster_import" and int(row.get("success_flag") or 0) == 1
+    )
     durations = [_row_duration(row) for row in rows if _row_duration(row) > 0]
     avg_duration = round(sum(durations) / len(durations), 2) if durations else 0
+    account_clauses = []
+    account_params: list[Any] = []
+    normalized = _normalize_filters(filters)
+    if normalized.get("started_from"):
+        account_clauses.append("created_at >= ?")
+        account_params.append(str(normalized["started_from"]))
+    if normalized.get("started_to"):
+        account_clauses.append("created_at <= ?")
+        account_params.append(str(normalized["started_to"]))
+    if normalized.get("email_domain"):
+        account_clauses.append("lower(substr(email, instr(email, '@') + 1)) = ?")
+        account_params.append(str(normalized["email_domain"]).lower())
+    account_where = (" WHERE " + " AND ".join(account_clauses)) if account_clauses else ""
+    account_rows = _safe_execute(
+        f"SELECT email FROM accounts{account_where}",
+        account_params,
+    )
+    success_attempt_emails = {
+        str(row.get("linked_account_email") or row.get("email_full") or "").strip().lower()
+        for row in rows
+        if int(row.get("success_flag") or 0) == 1
+    }
+    history_coverage_gap = 0
+    for account_row in account_rows:
+        account_email = str(account_row[0] or "").strip().lower()
+        if account_email and account_email not in success_attempt_emails:
+            history_coverage_gap += 1
     return {
         "attempts": attempts,
         "successes": successes,
@@ -764,6 +904,11 @@ def get_overview(filters: Optional[dict]) -> dict[str, Any]:
         "phone_gate_hits": phone_gate_hits,
         "phone_otp_entered": phone_otp_entered,
         "phone_otp_success": phone_otp_success,
+        "phone_bind_attempted": phone_bind_attempted,
+        "phone_bind_success": phone_bind_success,
+        "phone_bind_failed": phone_bind_failed,
+        "cluster_import_successes": cluster_import_successes,
+        "history_coverage_gap": history_coverage_gap,
     }
 
 
@@ -788,6 +933,9 @@ def get_distribution(filters: Optional[dict]) -> dict[str, Any]:
                 "phone_gate_hits": 0,
                 "phone_otp_entered": 0,
                 "phone_otp_success": 0,
+                "phone_bind_attempted": 0,
+                "phone_bind_success": 0,
+                "phone_bind_failed": 0,
                 "duration_sum_ms": 0,
                 "duration_count": 0,
             },
@@ -797,6 +945,9 @@ def get_distribution(filters: Optional[dict]) -> dict[str, Any]:
         bucket["phone_gate_hits"] += int(row.get("phone_gate_hit_flag") or 0)
         bucket["phone_otp_entered"] += int(row.get("phone_otp_entered_flag") or 0)
         bucket["phone_otp_success"] += int(row.get("phone_otp_success_flag") or 0)
+        bucket["phone_bind_attempted"] += int(row.get("phone_bind_attempted_flag") or 0)
+        bucket["phone_bind_success"] += int(row.get("phone_bind_success_flag") or 0)
+        bucket["phone_bind_failed"] += int(row.get("phone_bind_failed_flag") or 0)
         duration = _row_duration(row)
         if duration > 0:
             bucket["duration_sum_ms"] += duration
@@ -818,6 +969,9 @@ def get_distribution(filters: Optional[dict]) -> dict[str, Any]:
                 "phone_gate_hits": bucket["phone_gate_hits"],
                 "phone_otp_entered": bucket["phone_otp_entered"],
                 "phone_otp_success": bucket["phone_otp_success"],
+                "phone_bind_attempted": bucket["phone_bind_attempted"],
+                "phone_bind_success": bucket["phone_bind_success"],
+                "phone_bind_failed": bucket["phone_bind_failed"],
                 "avg_duration_ms": avg_duration,
             }
         )
@@ -947,6 +1101,123 @@ def backfill_accounts_history(limit: Optional[int] = None) -> int:
     return inserted
 
 
+def record_cluster_account_result(account: dict[str, Any], *, node_name: str, run_id: int = 0) -> int:
+    payload = dict(account or {})
+    token_data_raw = payload.get("token_data") or ""
+    try:
+        token_data = json.loads(token_data_raw or "{}")
+    except Exception:
+        token_data = {}
+    email = str(payload.get("email") or token_data.get("email") or "").strip().lower()
+    created_at = str(
+        payload.get("created_at")
+        or payload.get("finished_at")
+        or payload.get("started_at")
+        or _utc_now_str()
+    ).strip()
+    external_attempt_id = str(payload.get("attempt_id") or payload.get("external_attempt_id") or "").strip()
+    token_fingerprint = _token_fingerprint(token_data_raw)
+
+    if external_attempt_id:
+        existing = _safe_execute_one(
+            """
+            SELECT id FROM registration_attempts
+            WHERE source_mode = ? AND source_node_name = ? AND external_attempt_id = ?
+            """,
+            ("cluster_import", str(node_name or "").strip(), external_attempt_id),
+        )
+    else:
+        existing = _safe_execute_one(
+            """
+            SELECT id FROM registration_attempts
+            WHERE source_mode = ? AND source_node_name = ? AND linked_account_email = ?
+              AND linked_account_created_at = ? AND token_fingerprint = ?
+            """,
+            ("cluster_import", str(node_name or "").strip(), email, created_at, token_fingerprint),
+        )
+
+    if existing:
+        return int(existing[0] or 0)
+
+    attempt_id = start_attempt(
+        run_id=run_id,
+        task_id=str(payload.get("task_id") or "").strip(),
+        worker_id=str(payload.get("worker_id") or "").strip(),
+        source_mode="cluster_import",
+        source_node_name=str(node_name or "").strip(),
+        external_attempt_id=external_attempt_id,
+        token_fingerprint=token_fingerprint,
+        attempt_no=int(payload.get("attempt_no") or 1),
+        flow_type=str(payload.get("flow_type") or "register").strip(),
+        email=email,
+        proxy_name=str(payload.get("proxy_name") or token_data.get("sub2api_proxy_name") or "").strip(),
+        linked_account_email=email,
+        linked_account_created_at=created_at,
+        auto_capture_network=False,
+        result_snapshot_json={"token_type": str(token_data.get("type") or "")},
+    )
+    if not attempt_id:
+        return 0
+
+    phone_number_full = str(payload.get("phone_number_full") or "").strip()
+    phone_meta = normalize_phone_fields(
+        phone_number_full or str(payload.get("phone_number_e164") or "").strip(),
+        country_name_hint=str(payload.get("phone_country_name") or "").strip(),
+    )
+
+    patch_attempt(
+        attempt_id,
+        started_at=str(payload.get("started_at") or created_at),
+        finished_at=created_at,
+        exit_ip=str(payload.get("exit_ip") or "").strip(),
+        geo_country_name=str(payload.get("geo_country_name") or "").strip(),
+        source_node_name=str(node_name or "").strip(),
+        external_attempt_id=external_attempt_id,
+        token_fingerprint=token_fingerprint,
+        phone_number_full=phone_number_full or phone_meta["phone_number_full"],
+        phone_number_e164=str(payload.get("phone_number_e164") or "").strip() or phone_meta["phone_number_e164"],
+        phone_country_calling_code=str(payload.get("phone_country_calling_code") or "").strip() or phone_meta["phone_country_calling_code"],
+        phone_country_iso=str(payload.get("phone_country_iso") or "").strip() or phone_meta["phone_country_iso"],
+        phone_country_name=str(payload.get("phone_country_name") or "").strip() or phone_meta["phone_country_name"],
+        phone_national_number=str(payload.get("phone_national_number") or "").strip() or phone_meta["phone_national_number"],
+        phone_activation_id=str(payload.get("phone_activation_id") or "").strip(),
+        phone_bind_provider=str(payload.get("phone_bind_provider") or "").strip(),
+        phone_bind_attempted_flag=payload.get("phone_bind_attempted_flag"),
+        phone_bind_success_flag=payload.get("phone_bind_success_flag"),
+        phone_bind_failed_flag=payload.get("phone_bind_failed_flag"),
+        phone_bind_failure_reason=str(payload.get("phone_bind_failure_reason") or "").strip(),
+        phone_bind_stage=str(payload.get("phone_bind_stage") or "").strip(),
+    )
+    for item in payload.get("events") or []:
+        if not isinstance(item, dict):
+            continue
+        record_attempt_event(
+            attempt_id,
+            event_type=str(item.get("event_type") or item.get("type") or "cluster_event"),
+            phase=str(item.get("phase") or "cluster_import"),
+            elapsed_ms=item.get("elapsed_ms"),
+            ok_flag=item.get("ok_flag"),
+            http_status=item.get("http_status"),
+            reason_code=str(item.get("reason_code") or ""),
+            message=str(item.get("message") or ""),
+            url_key=str(item.get("url_key") or ""),
+            snapshot=item.get("snapshot"),
+        )
+    finish_attempt(
+        attempt_id,
+        final_status="success",
+        success_flag=True,
+        finished_at=created_at,
+        linked_account_email=email,
+        linked_account_created_at=created_at,
+        proxy_name=str(payload.get("proxy_name") or token_data.get("sub2api_proxy_name") or "").strip(),
+        phone_bind_attempted_flag=payload.get("phone_bind_attempted_flag"),
+        phone_bind_success_flag=payload.get("phone_bind_success_flag"),
+        phone_bind_failed_flag=payload.get("phone_bind_failed_flag"),
+    )
+    return attempt_id
+
+
 def record_extension_result(req: Any, run_id: int = 0) -> int:
     email = str(getattr(req, "email", "") or "").strip().lower()
     task_id = str(getattr(req, "task_id", "") or "").strip()
@@ -978,6 +1249,11 @@ def record_extension_result(req: Any, run_id: int = 0) -> int:
     phone_gate_hit = getattr(req, "phone_gate_hit", False)
     phone_otp_entered = getattr(req, "phone_otp_entered", False)
     phone_otp_success = getattr(req, "phone_otp_success", False)
+    phone_number_full = str(getattr(req, "phone_number_full", "") or "").strip()
+    phone_meta = normalize_phone_fields(
+        phone_number_full or str(getattr(req, "phone_number_e164", "") or "").strip(),
+        country_name_hint=str(getattr(req, "phone_country_name", "") or "").strip(),
+    )
     failure_stage = str(getattr(req, "failure_stage", "") or "").strip()
     error_type = str(getattr(req, "error_type", "") or "").strip()
     error_msg = str(getattr(req, "error_msg", "") or "").strip()
@@ -987,6 +1263,14 @@ def record_extension_result(req: Any, run_id: int = 0) -> int:
         started_at=started_at or _utc_now_str(),
         exit_ip=exit_ip,
         geo_country_name=geo_country_name,
+        phone_number_full=phone_number_full or phone_meta["phone_number_full"],
+        phone_number_e164=str(getattr(req, "phone_number_e164", "") or "").strip() or phone_meta["phone_number_e164"],
+        phone_country_calling_code=str(getattr(req, "phone_country_calling_code", "") or "").strip() or phone_meta["phone_country_calling_code"],
+        phone_country_iso=str(getattr(req, "phone_country_iso", "") or "").strip() or phone_meta["phone_country_iso"],
+        phone_country_name=str(getattr(req, "phone_country_name", "") or "").strip() or phone_meta["phone_country_name"],
+        phone_national_number=str(getattr(req, "phone_national_number", "") or "").strip() or phone_meta["phone_national_number"],
+        phone_activation_id=str(getattr(req, "phone_activation_id", "") or "").strip(),
+        phone_bind_provider=str(getattr(req, "phone_bind_provider", "") or "").strip(),
     )
     if exit_ip and not geo_country_name:
         geo = lookup_geo_for_ip(exit_ip)
@@ -1032,9 +1316,18 @@ def record_extension_result(req: Any, run_id: int = 0) -> int:
         phone_gate_hit_flag=phone_gate_hit,
         phone_otp_entered_flag=phone_otp_entered,
         phone_otp_success_flag=phone_otp_success,
+        phone_bind_attempted_flag=getattr(req, "phone_bind_attempted_flag", False),
+        phone_bind_success_flag=getattr(req, "phone_bind_success_flag", False),
+        phone_bind_failed_flag=getattr(req, "phone_bind_failed_flag", False),
+        metrics_json={},
         result_snapshot_json={
             "finished_at": finished_at,
             "status": status,
         },
+    )
+    patch_attempt(
+        attempt_id,
+        phone_bind_failure_reason=str(getattr(req, "phone_bind_failure_reason", "") or "").strip(),
+        phone_bind_stage=str(getattr(req, "phone_bind_stage", "") or "").strip(),
     )
     return attempt_id

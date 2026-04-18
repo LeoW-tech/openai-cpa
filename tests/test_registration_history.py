@@ -46,6 +46,27 @@ class RegistrationHistoryTests(unittest.TestCase):
         self.assertIn("registration_attempt_events", tables)
         self.assertIn("ip_geo_cache", tables)
 
+    def test_init_db_creates_phone_binding_columns(self):
+        with sqlite3.connect(self.db_path) as conn:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(registration_attempts)").fetchall()
+            }
+
+        self.assertIn("phone_number_full", columns)
+        self.assertIn("phone_number_e164", columns)
+        self.assertIn("phone_country_calling_code", columns)
+        self.assertIn("phone_country_iso", columns)
+        self.assertIn("phone_country_name", columns)
+        self.assertIn("phone_national_number", columns)
+        self.assertIn("phone_activation_id", columns)
+        self.assertIn("phone_bind_provider", columns)
+        self.assertIn("phone_bind_attempted_flag", columns)
+        self.assertIn("phone_bind_success_flag", columns)
+        self.assertIn("phone_bind_failed_flag", columns)
+        self.assertIn("phone_bind_failure_reason", columns)
+        self.assertIn("phone_bind_stage", columns)
+
     def test_history_service_records_attempt_and_events(self):
         run_id = self.history.start_run(
             source_mode="sub2api",
@@ -231,6 +252,104 @@ class RegistrationHistoryTests(unittest.TestCase):
         self.assertEqual(1, by_country["United States"]["phone_otp_entered"])
         self.assertEqual(1, by_country["Japan"]["attempts"])
         self.assertAlmostEqual(100.0, by_country["Japan"]["success_rate"], places=2)
+
+    def test_record_cluster_account_result_creates_and_dedupes_history_attempt(self):
+        payload = {
+            "email": "cluster@example.com",
+            "password": "unit-pass",
+            "token_data": json.dumps(
+                {
+                    "email": "cluster@example.com",
+                    "refresh_token": "rt-demo",
+                    "sub2api_proxy_name": "🇯🇵 日本W03 | IEPL",
+                }
+            ),
+            "created_at": "2026-04-18 08:30:00",
+            "started_at": "2026-04-18 08:20:00",
+            "finished_at": "2026-04-18 08:30:00",
+            "proxy_name": "🇯🇵 日本W03 | IEPL",
+            "exit_ip": "1.2.3.4",
+            "geo_country_name": "Japan",
+        }
+
+        first_id = self.history.record_cluster_account_result(payload, node_name="NODE-2")
+        second_id = self.history.record_cluster_account_result(payload, node_name="NODE-2")
+
+        self.assertTrue(first_id)
+        self.assertEqual(first_id, second_id)
+
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT COUNT(*), source_mode, success_flag, final_status, proxy_name, geo_country_name,
+                       external_attempt_id, source_node_name
+                FROM registration_attempts
+                WHERE linked_account_email = ?
+                """,
+                ("cluster@example.com",),
+            ).fetchone()
+
+        self.assertEqual(1, rows[0])
+        self.assertEqual("cluster_import", rows[1])
+        self.assertEqual(1, rows[2])
+        self.assertEqual("success", rows[3])
+        self.assertEqual("🇯🇵 日本W03 | IEPL", rows[4])
+        self.assertEqual("Japan", rows[5])
+        self.assertEqual("", rows[6])
+        self.assertEqual("NODE-2", rows[7])
+
+    def test_overview_and_distribution_include_phone_binding_metrics_and_history_gap(self):
+        run_id = self.history.start_run(source_mode="normal", target_count=0, trigger_source="unit-test")
+        attempt_id = self.history.start_attempt(
+            run_id=run_id,
+            source_mode="normal",
+            attempt_no=1,
+            flow_type="register",
+            email="phone@example.com",
+            proxy_name="HK-01",
+            auto_capture_network=False,
+        )
+        self.history.patch_attempt(
+            attempt_id,
+            started_at="2026-04-18 10:00:00",
+            finished_at="2026-04-18 10:05:00",
+            phone_country_calling_code="+852",
+            phone_country_name="Hong Kong",
+            phone_bind_attempted_flag=1,
+            phone_bind_success_flag=1,
+            phone_bind_stage="otp_validated",
+        )
+        self.history.finish_attempt(
+            attempt_id,
+            final_status="success",
+            success_flag=True,
+            total_duration_ms=5000,
+            finished_at="2026-04-18 10:05:00",
+        )
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO accounts (email, password, token_data, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("gap@example.com", "unit-pass", json.dumps({"email": "gap@example.com"}), "2026-04-18 10:06:00"),
+            )
+            conn.commit()
+
+        filters = {"started_from": "2026-04-18 00:00:00", "started_to": "2026-04-18 23:59:59"}
+        overview = self.history.get_overview(filters)
+        distribution = self.history.get_distribution({**filters, "group_by": "phone_country_calling_code"})
+
+        self.assertEqual(1, overview["phone_bind_attempted"])
+        self.assertEqual(1, overview["phone_bind_success"])
+        self.assertEqual(0, overview["phone_bind_failed"])
+        self.assertEqual(1, overview["history_coverage_gap"])
+
+        by_code = {row["group_value"]: row for row in distribution["rows"]}
+        self.assertEqual(1, by_code["+852"]["phone_bind_attempted"])
+        self.assertEqual(1, by_code["+852"]["phone_bind_success"])
+        self.assertEqual(0, by_code["+852"]["phone_bind_failed"])
 
 
 if __name__ == "__main__":

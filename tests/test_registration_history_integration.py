@@ -109,28 +109,111 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
     def test_ext_submit_result_records_history_for_legacy_payload(self):
         api_routes = self._reload_api_routes()
         demo_password = "unit-test-pass"
+        calls = []
+
+        def _record_extension(req, run_id=0):
+            calls.append(("history", req.token_data))
+            return 123
+
+        def _save_account(email, password, token_data):
+            calls.append(("save", token_data))
+            return True
+
+        with patch.object(api_routes.db_manager, "save_account_to_db", side_effect=_save_account):
+            with patch.object(
+                api_routes.registration_history,
+                "record_extension_result",
+                side_effect=_record_extension,
+            ) as record_extension_result:
+                with patch.object(api_routes.registration_history, "patch_attempt") as patch_attempt:
+                    result = api_routes.ext_submit_result(
+                        api_routes.ExtResultReq(
+                            status="success",
+                            task_id="TASK-1",
+                            email="demo@example.com",
+                            password=demo_password,
+                            token_data=json.dumps({"email": "demo@example.com"}),
+                        ),
+                        token="demo-token",
+                    )
+
+        self.assertEqual("success", result["status"])
+        record_extension_result.assert_called_once()
+        patch_attempt.assert_called_once_with(123, local_save_ok=1)
+        call_req = record_extension_result.call_args.args[0]
+        self.assertEqual("TASK-1", call_req.task_id)
+        self.assertEqual("demo@example.com", call_req.email)
+        self.assertEqual(("history", json.dumps({"email": "demo@example.com"})), calls[0])
+        self.assertEqual(("save", json.dumps({"email": "demo@example.com"})), calls[1])
+
+    def test_ext_submit_result_records_history_before_local_save_after_callback_exchange(self):
+        api_routes = self._reload_api_routes()
+        demo_password = "unit-test-pass"
+        calls = []
+
+        def _record_extension(req, run_id=0):
+            calls.append(("history", req.token_data))
+            return 456
+
+        def _save_account(email, password, token_data):
+            calls.append(("save", token_data))
+            return True
+
+        with patch.object(api_routes.db_manager, "save_account_to_db", side_effect=_save_account):
+            with patch.object(
+                api_routes.registration_history,
+                "record_extension_result",
+                side_effect=_record_extension,
+            ) as record_extension_result:
+                with patch.object(api_routes.registration_history, "patch_attempt") as patch_attempt:
+                    result = api_routes.ext_submit_result(
+                        api_routes.ExtResultReq(
+                            status="success",
+                            task_id="TASK-2",
+                            email="demo@example.com",
+                            password=demo_password,
+                            token_data="",
+                            callback_url="https://example.com/callback",
+                            expected_state="state-1",
+                            code_verifier="verifier-1",
+                        ),
+                        token="demo-token",
+                    )
+
+        self.assertEqual("success", result["status"])
+        record_extension_result.assert_called_once()
+        patch_attempt.assert_called_once_with(456, local_save_ok=1)
+        self.assertEqual(("history", json.dumps({"email": "demo@example.com"})), calls[0])
+        self.assertEqual(("save", json.dumps({"email": "demo@example.com"})), calls[1])
+
+    def test_cluster_upload_accounts_records_history_before_local_save(self):
+        api_routes = self._reload_api_routes()
+        payload = {
+            "email": "cluster@example.com",
+            "password": "unit-pass",
+            "token_data": json.dumps({"email": "cluster@example.com"}),
+            "started_at": "2026-04-18 08:20:00",
+            "finished_at": "2026-04-18 08:30:00",
+        }
 
         with patch.object(api_routes.db_manager, "save_account_to_db", return_value=True):
             with patch.object(
                 api_routes.registration_history,
-                "record_extension_result",
-                return_value=123,
-            ) as record_extension_result:
-                result = api_routes.ext_submit_result(
-                    api_routes.ExtResultReq(
-                        status="success",
-                        task_id="TASK-1",
-                        email="demo@example.com",
-                        password=demo_password,
-                        token_data=json.dumps({"email": "demo@example.com"}),
-                    ),
-                    token="demo-token",
+                "record_cluster_account_result",
+                return_value=321,
+            ) as record_cluster:
+                result = api_routes.cluster_upload_accounts(
+                    api_routes.ClusterUploadAccountsReq(
+                        node_name="NODE-2",
+                        secret="wenfxl666",
+                        accounts=[payload],
+                    )
                 )
+
         self.assertEqual("success", result["status"])
-        record_extension_result.assert_called_once()
-        call_req = record_extension_result.call_args.args[0]
-        self.assertEqual("TASK-1", call_req.task_id)
-        self.assertEqual("demo@example.com", call_req.email)
+        record_cluster.assert_called_once()
+        self.assertEqual(payload, record_cluster.call_args.args[0])
+        self.assertEqual("NODE-2", record_cluster.call_args.kwargs["node_name"])
 
 
 if __name__ == "__main__":

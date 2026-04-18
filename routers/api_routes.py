@@ -116,6 +116,19 @@ class ExtResultReq(BaseModel):
     phone_gate_hit: Optional[bool] = False
     phone_otp_entered: Optional[bool] = False
     phone_otp_success: Optional[bool] = False
+    phone_number_full: Optional[str] = ""
+    phone_number_e164: Optional[str] = ""
+    phone_country_calling_code: Optional[str] = ""
+    phone_country_iso: Optional[str] = ""
+    phone_country_name: Optional[str] = ""
+    phone_national_number: Optional[str] = ""
+    phone_activation_id: Optional[str] = ""
+    phone_bind_provider: Optional[str] = ""
+    phone_bind_attempted_flag: Optional[bool] = False
+    phone_bind_success_flag: Optional[bool] = False
+    phone_bind_failed_flag: Optional[bool] = False
+    phone_bind_failure_reason: Optional[str] = ""
+    phone_bind_stage: Optional[str] = ""
     failure_stage: Optional[str] = ""
     http_status: Optional[int] = None
     events: Optional[list[Any]] = None
@@ -416,6 +429,12 @@ async def get_analytics_attempts(
         success_flag: Optional[bool] = Query(None),
         phone_gate_hit_flag: Optional[bool] = Query(None),
         phone_otp_entered_flag: Optional[bool] = Query(None),
+        phone_bind_attempted_flag: Optional[bool] = Query(None),
+        phone_bind_success_flag: Optional[bool] = Query(None),
+        phone_bind_failed_flag: Optional[bool] = Query(None),
+        phone_country_iso: Optional[str] = Query(None),
+        phone_country_calling_code: Optional[str] = Query(None),
+        phone_number_e164: Optional[str] = Query(None),
         token: str = Depends(verify_token),
 ):
     filters = {
@@ -429,6 +448,12 @@ async def get_analytics_attempts(
         "success_flag": success_flag,
         "phone_gate_hit_flag": phone_gate_hit_flag,
         "phone_otp_entered_flag": phone_otp_entered_flag,
+        "phone_bind_attempted_flag": phone_bind_attempted_flag,
+        "phone_bind_success_flag": phone_bind_success_flag,
+        "phone_bind_failed_flag": phone_bind_failed_flag,
+        "phone_country_iso": phone_country_iso,
+        "phone_country_calling_code": phone_country_calling_code,
+        "phone_number_e164": phone_number_e164,
     }
     return {"status": "success", "data": registration_history.list_attempts(filters, page=page, page_size=page_size)}
 
@@ -453,6 +478,12 @@ async def export_analytics_attempts(
         email_domain: Optional[str] = Query(None),
         success_flag: Optional[bool] = Query(None),
         phone_otp_entered_flag: Optional[bool] = Query(None),
+        phone_bind_attempted_flag: Optional[bool] = Query(None),
+        phone_bind_success_flag: Optional[bool] = Query(None),
+        phone_bind_failed_flag: Optional[bool] = Query(None),
+        phone_country_iso: Optional[str] = Query(None),
+        phone_country_calling_code: Optional[str] = Query(None),
+        phone_number_e164: Optional[str] = Query(None),
         token: str = Depends(verify_token),
 ):
     filters = {
@@ -465,6 +496,12 @@ async def export_analytics_attempts(
         "email_domain": email_domain,
         "success_flag": success_flag,
         "phone_otp_entered_flag": phone_otp_entered_flag,
+        "phone_bind_attempted_flag": phone_bind_attempted_flag,
+        "phone_bind_success_flag": phone_bind_success_flag,
+        "phone_bind_failed_flag": phone_bind_failed_flag,
+        "phone_country_iso": phone_country_iso,
+        "phone_country_calling_code": phone_country_calling_code,
+        "phone_number_e164": phone_number_e164,
     }
     body = registration_history.export_attempts(filters, export_format=export_format)
     media_type = "text/csv; charset=utf-8" if str(export_format).lower() == "csv" else "application/json; charset=utf-8"
@@ -1083,6 +1120,16 @@ def cluster_upload_accounts(req: ClusterUploadAccountsReq):
     success_count = 0
     for acc in req.accounts:
         if acc.get("email") and acc.get("token_data"):
+            try:
+                attempt_id = registration_history.record_cluster_account_result(
+                    acc,
+                    node_name=req.node_name,
+                    run_id=int(core_engine.run_stats.get("analytics_run_id") or 0),
+                )
+                if not attempt_id:
+                    print(f"[{core_engine.ts()}] [WARNING] 集群账号落历史失败: node={req.node_name}, email={acc.get('email')}")
+            except Exception as e:
+                print(f"[{core_engine.ts()}] [ERROR] 集群账号写入历史异常: node={req.node_name}, email={acc.get('email')}, error={e}")
             if db_manager.save_account_to_db(acc.get("email"), acc.get("password"),
                                              acc.get("token_data")): success_count += 1
 
@@ -1172,12 +1219,15 @@ def ext_submit_result(req: ExtResultReq, token: str = Depends(verify_token)):
             except Exception as e:
                 print(f"换取 Token 失败: {e}")
                 return {"status": "error", "message": "Token 换取失败"}
-        db_manager.save_account_to_db(req.email, req.password, token_json)
-        core_engine.run_stats['success'] = core_engine.run_stats.get('success', 0) + 1
-        registration_history.record_extension_result(
-            req,
+        history_req = req.model_copy(update={"token_data": token_json})
+        attempt_id = registration_history.record_extension_result(
+            history_req,
             run_id=int(core_engine.run_stats.get("analytics_run_id") or 0),
         )
+        saved_ok = db_manager.save_account_to_db(req.email, req.password, token_json)
+        if attempt_id:
+            registration_history.patch_attempt(attempt_id, local_save_ok=1 if saved_ok else 0)
+        core_engine.run_stats['success'] = core_engine.run_stats.get('success', 0) + 1
 
         return {"status": "success", "message": "战利品已入库"}
     else:

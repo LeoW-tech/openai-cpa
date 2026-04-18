@@ -1494,6 +1494,25 @@ def _try_verify_phone_via_hero_sms(
                     "HeroSMS 尝试复用手机号: "
                     f"号码：{reuse_phone}, used={reuse_used}"
                 )
+                reuse_meta = registration_history.normalize_phone_fields(
+                    reuse_phone,
+                    country_id=country_id,
+                )
+                _history_patch(
+                    run_ctx,
+                    phone_activation_id=reuse_id,
+                    phone_bind_provider="hero_sms",
+                    phone_bind_stage="number_acquired",
+                    **reuse_meta,
+                )
+                _history_event(
+                    run_ctx,
+                    event_type="phone_number_acquired",
+                    phase="phone",
+                    ok_flag=True,
+                    message="reuse_number",
+                    snapshot={"activation_id": reuse_id, "phone_number": reuse_phone},
+                )
                 ok_reuse, next_reuse, reason_reuse = _verify_once(
                     reuse_id,
                     reuse_phone,
@@ -1509,10 +1528,22 @@ def _try_verify_phone_via_hero_sms(
                         run_ctx,
                         phone_reuse_used_flag=1,
                         phone_otp_country=str(country_id),
+                        phone_bind_attempted_flag=1,
+                        phone_bind_success_flag=1,
+                        phone_bind_failed_flag=0,
+                        phone_bind_stage="otp_validated",
                     )
                     return True, next_reuse
                 last_reason = reason_reuse or "复用手机号失败"
                 _hero_sms_country_record_result(country_id, False, last_reason)
+                _history_patch(
+                    run_ctx,
+                    phone_bind_attempted_flag=1,
+                    phone_bind_success_flag=0,
+                    phone_bind_failed_flag=1,
+                    phone_bind_failure_reason=last_reason,
+                    phone_bind_stage="failed",
+                )
                 if _is_hero_sms_timeout_issue(last_reason):
                     switched = _hero_sms_country_mark_timeout(country_id)
                     if switched:
@@ -1565,6 +1596,25 @@ def _try_verify_phone_via_hero_sms(
                 "HeroSMS 取号成功: "
                 f"第 {attempt}/{max_tries} 次, 号码：{phone_number}"
             )
+            phone_meta = registration_history.normalize_phone_fields(
+                phone_number,
+                country_id=country_id,
+            )
+            _history_patch(
+                run_ctx,
+                phone_activation_id=activation_id,
+                phone_bind_provider="hero_sms",
+                phone_bind_stage="number_acquired",
+                **phone_meta,
+            )
+            _history_event(
+                run_ctx,
+                event_type="phone_number_acquired",
+                phase="phone",
+                ok_flag=True,
+                message=f"country_id={country_id}",
+                snapshot={"activation_id": activation_id, "phone_number": phone_number},
+            )
             ok_new, next_new, reason_new = _verify_once(
                 activation_id,
                 phone_number,
@@ -1582,10 +1632,22 @@ def _try_verify_phone_via_hero_sms(
                     run_ctx,
                     phone_reuse_used_flag=1 if reuse_on else 0,
                     phone_otp_country=str(country_id),
+                    phone_bind_attempted_flag=1,
+                    phone_bind_success_flag=1,
+                    phone_bind_failed_flag=0,
+                    phone_bind_stage="otp_validated",
                 )
                 return True, next_new
             last_reason = reason_new or "手机验证失败"
             _hero_sms_country_record_result(country_id, False, last_reason)
+            _history_patch(
+                run_ctx,
+                phone_bind_attempted_flag=1,
+                phone_bind_success_flag=0,
+                phone_bind_failed_flag=1,
+                phone_bind_failure_reason=last_reason,
+                phone_bind_stage="failed",
+            )
             if reuse_on and _is_hero_sms_timeout_issue(last_reason):
                 switched = _hero_sms_country_mark_timeout(country_id)
                 if switched:

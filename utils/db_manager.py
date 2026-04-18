@@ -156,6 +156,9 @@ def init_db():
                 task_id TEXT,
                 worker_id TEXT,
                 source_mode TEXT,
+                source_node_name TEXT,
+                external_attempt_id TEXT,
+                token_fingerprint TEXT,
                 attempt_no INTEGER DEFAULT 1,
                 flow_type TEXT,
                 legacy_backfill INTEGER DEFAULT 0,
@@ -203,6 +206,19 @@ def init_db():
                 phone_otp_provider TEXT,
                 phone_otp_country TEXT,
                 phone_reuse_used_flag INTEGER DEFAULT 0,
+                phone_number_full TEXT,
+                phone_number_e164 TEXT,
+                phone_country_calling_code TEXT,
+                phone_country_iso TEXT,
+                phone_country_name TEXT,
+                phone_national_number TEXT,
+                phone_activation_id TEXT,
+                phone_bind_provider TEXT,
+                phone_bind_attempted_flag INTEGER DEFAULT 0,
+                phone_bind_success_flag INTEGER DEFAULT 0,
+                phone_bind_failed_flag INTEGER DEFAULT 0,
+                phone_bind_failure_reason TEXT,
+                phone_bind_stage TEXT,
                 local_save_ok INTEGER DEFAULT 0,
                 cpa_upload_ok INTEGER DEFAULT 0,
                 sub2api_push_ok INTEGER DEFAULT 0,
@@ -254,12 +270,36 @@ def init_db():
             execute_sql(c, 'ALTER TABLE local_mailboxes ADD COLUMN retry_master INTEGER DEFAULT 0;')
         except Exception:
             pass
+        for alter_sql in (
+            'ALTER TABLE registration_attempts ADD COLUMN source_node_name TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN external_attempt_id TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN token_fingerprint TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_number_full TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_number_e164 TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_country_calling_code TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_country_iso TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_country_name TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_national_number TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_activation_id TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_bind_provider TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_bind_attempted_flag INTEGER DEFAULT 0;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_bind_success_flag INTEGER DEFAULT 0;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_bind_failed_flag INTEGER DEFAULT 0;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_bind_failure_reason TEXT;',
+            'ALTER TABLE registration_attempts ADD COLUMN phone_bind_stage TEXT;',
+        ):
+            try:
+                execute_sql(c, alter_sql)
+            except Exception:
+                pass
         for index_sql in (
             'CREATE INDEX IF NOT EXISTS idx_registration_runs_started_at ON registration_runs(started_at)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_started_at ON registration_attempts(started_at)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_final_status ON registration_attempts(final_status)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_success_flag ON registration_attempts(success_flag)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_phone_otp_entered ON registration_attempts(phone_otp_entered_flag)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_phone_bind_attempted ON registration_attempts(phone_bind_attempted_flag)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_phone_bind_success ON registration_attempts(phone_bind_success_flag)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_proxy_name ON registration_attempts(proxy_name)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_exit_ip ON registration_attempts(exit_ip)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_geo_country_name ON registration_attempts(geo_country_name)',
@@ -267,6 +307,8 @@ def init_db():
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_source_mode ON registration_attempts(source_mode)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_task_id ON registration_attempts(task_id)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempts_run_id ON registration_attempts(run_id)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_external_attempt_id ON registration_attempts(external_attempt_id)',
+            'CREATE INDEX IF NOT EXISTS idx_registration_attempts_source_node_name ON registration_attempts(source_node_name)',
             'CREATE INDEX IF NOT EXISTS idx_registration_attempt_events_attempt_seq ON registration_attempt_events(attempt_id, seq_no)',
         ):
             try:
