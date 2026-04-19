@@ -117,6 +117,15 @@ def web_print(*args, **kwargs):
 
 builtins.print = web_print
 
+
+def _log_local_account_saved_success(account_email: str) -> None:
+    print(f"[{ts()}] [SUCCESS] 🎉🎉🥳🥳🎊✨🔥 账号密码与 Token 已安全存入: {mask_email(account_email)}")
+
+
+def _log_sub2api_restock_success() -> None:
+    print(f"[{ts()}] [SUCCESS] 🚀🚀🎊🥳✨🔥 Sub2API 补货入库成功")
+
+
 def _load_dotenv(path: str = ".env") -> None:
     if not os.path.exists(path):
         return
@@ -607,7 +616,7 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
                 if saved_ok:
                     run_ctx["linked_account_created_at"] = db_manager.get_account_created_at(account_email)
             if saved_ok:
-                print(f"[{ts()}] [SUCCESS] 账号密码与 Token 已安全存入: {mask_email(account_email)}")
+                _log_local_account_saved_success(account_email)
 
         # CPA 云端上传
         if cpa_upload:
@@ -1383,7 +1392,7 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event):
                     if status == "success":
                         if hasattr(client, "add_account"):
                             ok, msg, _ = add_result_account_to_sub2api(client, result, run_ctx=run_ctx, proxy_url=p)
-                            if ok: print(f"[{ts()}] [SUCCESS] Sub2API 补货入库成功")
+                            if ok: _log_sub2api_restock_success()
                             else: print(f"[{ts()}] [ERROR] Sub2API 补货入库失败: {msg}")
                     return status
 
