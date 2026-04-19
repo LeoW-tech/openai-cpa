@@ -31,8 +31,23 @@ processed_msg_ids = BoundedSet(max_size=20000)
 class PostmanFleet:
     def __init__(self):
         self.active_mailboxes = set()
+        self.listener_registry = {}
         self.postman_signals = {}
         self.fleet_lock = threading.Lock()
+
+    @staticmethod
+    def _normalize_master_email(master_email):
+        return str(master_email or "").strip().lower()
+
+    @staticmethod
+    def _thread_is_alive(thread):
+        checker = getattr(thread, "is_alive", None)
+        if callable(checker):
+            try:
+                return bool(checker())
+            except Exception:
+                return True
+        return bool(getattr(thread, "started", True))
 
     def reset_for_next_round(self):
         with code_pool_lock:
@@ -42,7 +57,8 @@ class PostmanFleet:
         stop_events = []
         with self.fleet_lock:
             self.active_mailboxes.clear()
-            stop_events = list(self.postman_signals.values())
+            stop_events = [entry["stop_event"] for entry in self.listener_registry.values()]
+            self.listener_registry.clear()
             self.postman_signals.clear()
         for stop_event in stop_events:
             stop_event.set()
@@ -50,44 +66,104 @@ class PostmanFleet:
             global_code_pool.clear()
         print(f"[{cfg.ts()}] [INFO] 🛑 邮局总管已下达停工令，所有邮递员准备下班。")
 
-    def ensure_mailbox_listener(self, ms_service, master_mailbox):
-        master_email = master_mailbox.get('master_email') or master_mailbox.get('email')
+    def acquire_mailbox_listener(self, ms_service, master_mailbox):
+        normalized_mailbox = dict(master_mailbox or {})
+        master_email = self._normalize_master_email(
+            normalized_mailbox.get("master_email") or normalized_mailbox.get("email")
+        )
+        if not master_email:
+            return {"master_email": "", "ref_count": 0, "created": False}
+
+        normalized_mailbox["master_email"] = master_email
         from utils.email_providers.mail_service import mask_email
+
         with self.fleet_lock:
-            if master_email in self.postman_signals:
-                print(f"[{cfg.ts()}] [INFO] 🔄 发现老邮递员 ({mask_email(master_email)})，正在让其下班休息...")
-                self.postman_signals[master_email].set()
-                del self.postman_signals[master_email]
+            entry = self.listener_registry.get(master_email)
+            if entry and self._thread_is_alive(entry.get("thread")):
+                entry["ref_count"] += 1
+                entry["last_acquired_at"] = time.time()
+                entry["mailbox"].update(normalized_mailbox)
+                entry["ms_service"] = ms_service
+                return {"master_email": master_email, "ref_count": entry["ref_count"], "created": False}
+
+            if entry:
+                self.listener_registry.pop(master_email, None)
+                self.postman_signals.pop(master_email, None)
+
             stop_event = threading.Event()
+            entry = {
+                "stop_event": stop_event,
+                "ref_count": 1,
+                "mailbox": normalized_mailbox,
+                "ms_service": ms_service,
+                "thread": None,
+                "last_acquired_at": time.time(),
+            }
+            thread = threading.Thread(
+                target=self._exclusive_postman_worker,
+                args=(master_email, entry, stop_event),
+                daemon=True
+            )
+            entry["thread"] = thread
+            self.listener_registry[master_email] = entry
             self.postman_signals[master_email] = stop_event
 
-        t = threading.Thread(
-            target=self._exclusive_postman_worker,
-            args=(ms_service, master_mailbox, stop_event),
-            daemon=True
-        )
-        t.start()
+        thread.start()
 
         print(f"[{cfg.ts()}] [INFO] 📮 派发新邮递员！开始专属监听: {mask_email(master_email)}")
+        return {"master_email": master_email, "ref_count": 1, "created": True}
+
+    def ensure_mailbox_listener(self, ms_service, master_mailbox):
+        return self.acquire_mailbox_listener(ms_service, master_mailbox)
 
     def add_mailbox_listener(self, ms_service, master_mailbox):
-        self.ensure_mailbox_listener(ms_service, master_mailbox)
+        self.acquire_mailbox_listener(ms_service, master_mailbox)
+
+    def release_mailbox_listener(self, master_email):
+        normalized_email = self._normalize_master_email(master_email)
+        if not normalized_email:
+            return {"master_email": "", "ref_count": 0, "stopped": False}
+
+        stop_event = None
+        remaining_refs = 0
+        with self.fleet_lock:
+            entry = self.listener_registry.get(normalized_email)
+            if not entry:
+                return {"master_email": normalized_email, "ref_count": 0, "stopped": False}
+
+            entry["ref_count"] = max(0, int(entry.get("ref_count") or 0) - 1)
+            remaining_refs = entry["ref_count"]
+            if remaining_refs == 0:
+                stop_event = entry["stop_event"]
+                self.listener_registry.pop(normalized_email, None)
+                self.postman_signals.pop(normalized_email, None)
+
+        if stop_event:
+            stop_event.set()
+        return {
+            "master_email": normalized_email,
+            "ref_count": remaining_refs,
+            "stopped": bool(stop_event),
+        }
 
     def stop_mailbox_listener(self, master_email):
-        normalized_email = str(master_email or "").strip().lower()
+        normalized_email = self._normalize_master_email(master_email)
         if not normalized_email:
             return
 
         stop_event = None
         with self.fleet_lock:
+            self.listener_registry.pop(normalized_email, None)
             stop_event = self.postman_signals.pop(normalized_email, None)
         if stop_event:
             stop_event.set()
 
-    def _exclusive_postman_worker(self, ms_service, master_mailbox, stop_event):
-        master_email = str(master_mailbox.get('master_email') or master_mailbox.get('email') or "").strip().lower()
+    def _exclusive_postman_worker(self, master_email, entry, stop_event):
+        master_email = self._normalize_master_email(master_email)
         while not getattr(cfg, 'GLOBAL_STOP', False) and not stop_event.is_set():
             try:
+                master_mailbox = entry["mailbox"]
+                ms_service = entry["ms_service"]
                 messages = ms_service.fetch_openai_messages(master_mailbox)
                 if master_mailbox.get("_polling_stopped") == "abuse_mode":
                     break
@@ -129,8 +205,9 @@ class PostmanFleet:
                     break
                 time.sleep(0.5)
         with self.fleet_lock:
-            current_event = self.postman_signals.get(master_email)
-            if current_event is stop_event:
+            current_entry = self.listener_registry.get(master_email)
+            if current_entry and current_entry.get("stop_event") is stop_event:
+                self.listener_registry.pop(master_email, None)
                 self.postman_signals.pop(master_email, None)
         from utils.email_providers.mail_service import mask_email
         print(f"[{cfg.ts()}] [INFO] 🛑 ({mask_email(master_email)}) 的专属邮递员已下班，屏幕前的你下班了吗？。")
