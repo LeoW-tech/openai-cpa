@@ -721,9 +721,9 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
     if (
         getattr(cfg, "EMAIL_API_MODE", "") == "local_microsoft"
         and last_email
-        and hasattr(mail_service, "stop_local_microsoft_listener")
+        and hasattr(mail_service, "release_local_microsoft_listener")
     ):
-        mail_service.stop_local_microsoft_listener(last_email)
+        mail_service.release_local_microsoft_listener(last_email)
     return ret_status
 
 

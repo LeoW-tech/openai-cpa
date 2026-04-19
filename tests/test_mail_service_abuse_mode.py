@@ -67,7 +67,7 @@ def _graph_message(
 
 
 class MailServiceAbuseModeTests(unittest.TestCase):
-    def test_get_oai_code_stops_listener_after_fast_code_success(self):
+    def test_get_oai_code_releases_listener_after_fast_code_success(self):
         mailbox = {
             "email": "user+alias@example.com",
             "master_email": "user@example.com",
@@ -78,13 +78,14 @@ class MailServiceAbuseModeTests(unittest.TestCase):
         with patch("utils.email_providers.mail_service.cfg.EMAIL_API_MODE", "local_microsoft"):
             with patch("utils.email_providers.mail_service.wait_for_code", return_value="654321"):
                 with patch(
-                    "utils.email_providers.mail_service.ensure_local_microsoft_listener",
+                    "utils.email_providers.mail_service.acquire_local_microsoft_listener",
                     create=True,
-                ) as ensure_listener:
+                    return_value=mailbox,
+                ) as acquire_listener:
                     with patch(
-                        "utils.email_providers.mail_service.stop_local_microsoft_listener",
+                        "utils.email_providers.mail_service.release_local_microsoft_listener",
                         create=True,
-                    ) as stop_listener:
+                    ) as release_listener:
                         code = get_oai_code(
                             "user+alias@example.com",
                             jwt=json.dumps(mailbox),
@@ -93,10 +94,10 @@ class MailServiceAbuseModeTests(unittest.TestCase):
                         )
 
         self.assertEqual("654321", code)
-        ensure_listener.assert_called_once()
-        stop_listener.assert_called_once()
+        acquire_listener.assert_called_once()
+        release_listener.assert_called_once_with("user+alias@example.com", mailbox)
 
-    def test_get_oai_code_stops_listener_after_empty_result(self):
+    def test_get_oai_code_releases_listener_after_empty_result(self):
         mailbox = {
             "email": "user+alias@example.com",
             "master_email": "user@example.com",
@@ -107,13 +108,14 @@ class MailServiceAbuseModeTests(unittest.TestCase):
         with patch("utils.email_providers.mail_service.cfg.EMAIL_API_MODE", "local_microsoft"):
             with patch("utils.email_providers.mail_service.wait_for_code", return_value=""):
                 with patch(
-                    "utils.email_providers.mail_service.ensure_local_microsoft_listener",
+                    "utils.email_providers.mail_service.acquire_local_microsoft_listener",
                     create=True,
-                ) as ensure_listener:
+                    return_value=mailbox,
+                ) as acquire_listener:
                     with patch(
-                        "utils.email_providers.mail_service.stop_local_microsoft_listener",
+                        "utils.email_providers.mail_service.release_local_microsoft_listener",
                         create=True,
-                    ) as stop_listener:
+                    ) as release_listener:
                         with patch(
                             "utils.email_providers.mail_service._poll_local_ms_for_oai_code_graph",
                             return_value="",
@@ -126,8 +128,8 @@ class MailServiceAbuseModeTests(unittest.TestCase):
                             )
 
         self.assertEqual("", code)
-        ensure_listener.assert_called_once()
-        stop_listener.assert_called_once()
+        acquire_listener.assert_called_once()
+        release_listener.assert_called_once_with("user+alias@example.com", mailbox)
 
     def test_extract_otp_code_ignores_openai_template_css_digits(self):
         html = """

@@ -99,7 +99,7 @@ def _derive_master_email_for_listener(email: str) -> str:
     return f"{user_part}@{domain_part}"
 
 
-def ensure_local_microsoft_listener(
+def acquire_local_microsoft_listener(
         email: str,
         jwt: Any = "",
         proxies: Any = None,
@@ -124,8 +124,42 @@ def ensure_local_microsoft_listener(
     if ms_service is None:
         from utils.email_providers.local_microsoft_service import LocalMicrosoftService
         ms_service = LocalMicrosoftService(proxies=proxies)
-    global_postman_fleet.ensure_mailbox_listener(ms_service, mailbox)
+    global_postman_fleet.acquire_mailbox_listener(ms_service, mailbox)
     return mailbox
+
+
+def ensure_local_microsoft_listener(
+        email: str,
+        jwt: Any = "",
+        proxies: Any = None,
+        ms_service: Any = None,
+):
+    return acquire_local_microsoft_listener(
+        email=email,
+        jwt=jwt,
+        proxies=proxies,
+        ms_service=ms_service,
+    )
+
+
+def release_local_microsoft_listener(email: str, jwt: Any = ""):
+    mailbox = None
+    if isinstance(jwt, dict):
+        mailbox = jwt
+    else:
+        try:
+            parsed = json.loads(jwt or "{}")
+            if isinstance(parsed, dict):
+                mailbox = parsed
+        except Exception:
+            mailbox = None
+
+    master_email = ""
+    if isinstance(mailbox, dict):
+        master_email = str(mailbox.get("master_email") or mailbox.get("email") or "").strip().lower()
+    if not master_email:
+        master_email = _derive_master_email_for_listener(email)
+    global_postman_fleet.release_mailbox_listener(master_email)
 
 
 def stop_local_microsoft_listener(email: str, jwt: Any = ""):
@@ -497,7 +531,7 @@ def get_email_and_token(proxies: Any = None) -> tuple:
         email = mailbox_info["email"]
         set_last_email(email)
         print(f"[{cfg.ts()}] [INFO] 微软库分配并锁定账号: ({mask_email(email)})")
-        global_postman_fleet.ensure_mailbox_listener(ms_service, mailbox_info)
+        global_postman_fleet.acquire_mailbox_listener(ms_service, mailbox_info)
         return email, json.dumps(mailbox_info, ensure_ascii=False)
 
     prefix, ai_enabled = _get_ai_data_package()
@@ -954,7 +988,7 @@ def get_oai_code(
             local_ms_account["email"] = str(local_ms_account.get("email") or email).strip()
             from utils.email_providers.local_microsoft_service import LocalMicrosoftService
             ms_service = LocalMicrosoftService(proxies=mail_proxies)
-            listener_mailbox = ensure_local_microsoft_listener(
+            listener_mailbox = acquire_local_microsoft_listener(
                 email=email,
                 jwt=local_ms_account,
                 proxies=mail_proxies,
@@ -976,7 +1010,7 @@ def get_oai_code(
                     max_attempts=max_attempts,
                 )
             finally:
-                stop_local_microsoft_listener(email, listener_mailbox)
+                release_local_microsoft_listener(email, listener_mailbox)
         else:
             print(f"\n[{cfg.ts()}] [ERROR] 缺少微软邮箱凭据，无法收信。")
             return ""

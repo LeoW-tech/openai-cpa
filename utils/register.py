@@ -399,99 +399,6 @@ def _oai_headers(did: str, extra: dict = None) -> dict:
     return h
 
 
-def _validate_email_otp_with_401_backoff(
-        *,
-        session: requests.Session,
-        did: str,
-        ctx: Optional[Dict[str, Any]],
-        proxy: Optional[str],
-        user_agent: Optional[str],
-        referer: str,
-        email: str,
-        email_jwt: str,
-        processed_mail_ids: set,
-        mail_state: Optional[dict] = None,
-        code: str,
-        proxies: Any = None,
-        label: str = "验证码",
-        sentinel_flow: str = "authorize_continue",
-        run_ctx: Optional[dict] = None,
-) -> Any:
-    _increment_counter(
-        run_ctx,
-        "email_otp_validate_count",
-        event_type="email_otp_validated",
-        phase="email_otp",
-        message=label,
-        snapshot={"stage": "submit"},
-    )
-
-    def _submit_otp(otp_code: str) -> Any:
-        sentinel_otp = generate_payload(
-            did=did,
-            flow=sentinel_flow,
-            proxy=proxy,
-            user_agent=user_agent,
-            impersonate="chrome110",
-            ctx=ctx,
-        )
-        val_headers = _oai_headers(did, {
-            "Referer": referer,
-            "content-type": "application/json",
-        })
-        if sentinel_otp:
-            val_headers["openai-sentinel-token"] = sentinel_otp
-        return _post_with_retry(
-            session,
-            "https://auth.openai.com/api/accounts/email-otp/validate",
-            headers=val_headers,
-            json_body={"code": otp_code},
-            proxies=proxies,
-        )
-
-    masked_email = mask_email(email)
-    last_response = _submit_otp(code)
-    if last_response.status_code != 401:
-        return last_response
-
-    print(f"[{cfg.ts()}] [WARNING] （{masked_email}）{label}首次校验返回 401，进入 401 退避补救...")
-    for retry_index, wait_seconds in enumerate((10, 20, 30), start=1):
-        if getattr(cfg, 'GLOBAL_STOP', False):
-            return last_response
-        _increment_counter(run_ctx, "email_otp_401_retry_count")
-
-        print(
-            f"[{cfg.ts()}] [INFO] （{masked_email}）{label} 第 {retry_index}/3 次退避补救，"
-            f"等待 {wait_seconds}s 后短轮询新验证码..."
-        )
-        time.sleep(wait_seconds)
-
-        latest_code = get_oai_code(
-            email,
-            jwt=email_jwt,
-            proxies=proxies,
-            processed_mail_ids=processed_mail_ids,
-            mail_state=mail_state,
-            max_attempts=1,
-        )
-        if not latest_code:
-            print(f"[{cfg.ts()}] [WARNING] （{masked_email}）{label} 第 {retry_index}/3 次补救未获取到新验证码。")
-            continue
-
-        print(f"[{cfg.ts()}] [INFO] （{masked_email}）{label} 第 {retry_index}/3 次补救已获取到新验证码，准备再次提交...")
-        last_response = _submit_otp(latest_code)
-        print(
-            f"[{cfg.ts()}] [INFO] （{masked_email}）{label} 第 {retry_index}/3 次补救提交结果: "
-            f"{last_response.status_code}"
-        )
-        if last_response.status_code == 200:
-            return last_response
-        if last_response.status_code != 401:
-            return last_response
-
-    return last_response
-
-
 def _create_account_with_history(
         *,
         session: requests.Session,
@@ -971,21 +878,35 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             _set_failure(run_ctx, stage="takeover_wait_otp", message="login code empty")
                             return None, None
 
-                        code_resp = _validate_email_otp_with_401_backoff(
-                            session=s_reg,
+                        _increment_counter(
+                            run_ctx,
+                            "email_otp_validate_count",
+                            event_type="email_otp_validated",
+                            phase="email_otp",
+                            message="接管验证码",
+                            snapshot={"stage": "submit"},
+                        )
+                        login_sentinel_otp = generate_payload(
                             did=did,
-                            ctx=login_ctx,
+                            flow="authorize_continue",
                             proxy=proxy,
                             user_agent=current_ua,
-                            referer="https://auth.openai.com/email-verification",
-                            email=email,
-                            email_jwt=email_jwt,
-                            processed_mail_ids=processed_mails,
-                            mail_state=mail_state,
-                            code=login_code,
+                            impersonate="chrome110",
+                            ctx=login_ctx,
+                        )
+                        val_headers = _oai_headers(did, {
+                            "Referer": "https://auth.openai.com/email-verification",
+                            "content-type": "application/json",
+                        })
+                        if login_sentinel_otp:
+                            val_headers["openai-sentinel-token"] = login_sentinel_otp
+
+                        code_resp = _post_with_retry(
+                            s_reg,
+                            "https://auth.openai.com/api/accounts/email-otp/validate",
+                            headers=val_headers,
+                            json_body={"code": login_code},
                             proxies=proxies,
-                            label="接管验证码",
-                            run_ctx=run_ctx,
                         )
 
                         if code_resp.status_code == 200:
@@ -1164,21 +1085,35 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             _set_failure(run_ctx, stage="register_wait_otp", message="signup code empty")
                             return None, None
 
-                        code_resp = _validate_email_otp_with_401_backoff(
-                            session=s_reg,
+                        _increment_counter(
+                            run_ctx,
+                            "email_otp_validate_count",
+                            event_type="email_otp_validated",
+                            phase="email_otp",
+                            message="注册验证码",
+                            snapshot={"stage": "submit"},
+                        )
+                        sentinel_otp = generate_payload(
                             did=did,
-                            ctx=reg_ctx,
+                            flow="authorize_continue",
                             proxy=proxy,
                             user_agent=current_ua,
-                            referer="https://auth.openai.com/email-verification",
-                            email=email,
-                            email_jwt=email_jwt,
-                            processed_mail_ids=processed_mails,
-                            mail_state=mail_state,
-                            code=code,
+                            impersonate="chrome110",
+                            ctx=reg_ctx,
+                        )
+                        val_headers = _oai_headers(did, {
+                            "Referer": "https://auth.openai.com/email-verification",
+                            "content-type": "application/json",
+                        })
+                        if sentinel_otp:
+                            val_headers["openai-sentinel-token"] = sentinel_otp
+
+                        code_resp = _post_with_retry(
+                            s_reg,
+                            "https://auth.openai.com/api/accounts/email-otp/validate",
+                            headers=val_headers,
+                            json_body={"code": code},
                             proxies=proxies,
-                            label="注册验证码",
-                            run_ctx=run_ctx,
                         )
 
                         if code_resp.status_code != 200:
@@ -1482,21 +1417,35 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             _set_failure(run_ctx, stage="oauth_takeover_wait_otp", message="oauth login code empty")
                             return None, None
 
-                        login_code_resp = _validate_email_otp_with_401_backoff(
-                            session=s_log,
+                        _increment_counter(
+                            run_ctx,
+                            "email_otp_validate_count",
+                            event_type="email_otp_validated",
+                            phase="email_otp",
+                            message="OAuth 登录验证码",
+                            snapshot={"stage": "submit"},
+                        )
+                        login_sentinel_otp = generate_payload(
                             did=log_did,
-                            ctx=log_ctx,
+                            flow="authorize_continue",
                             proxy=proxy,
                             user_agent=current_ua,
-                            referer="https://auth.openai.com/email-verification",
-                            email=email,
-                            email_jwt=email_jwt,
-                            processed_mail_ids=processed_mails,
-                            mail_state=mail_state,
-                            code=login_code_oauth,
+                            impersonate="chrome110",
+                            ctx=log_ctx,
+                        )
+                        val_headers = _oai_headers(log_did, {
+                            "Referer": "https://auth.openai.com/email-verification",
+                            "content-type": "application/json",
+                        })
+                        if login_sentinel_otp:
+                            val_headers["openai-sentinel-token"] = login_sentinel_otp
+
+                        login_code_resp = _post_with_retry(
+                            s_log,
+                            "https://auth.openai.com/api/accounts/email-otp/validate",
+                            headers=val_headers,
+                            json_body={"code": login_code_oauth},
                             proxies=proxies,
-                            label="OAuth 登录验证码",
-                            run_ctx=run_ctx,
                         )
                         if login_code_resp.status_code == 200:
                             print(f"[{cfg.ts()}] [SUCCESS] （{mask_email(email)}）老帐号OAuth 阶段验证码通过！")
@@ -1657,21 +1606,35 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 _set_failure(run_ctx, stage="oauth_secondary_wait_otp", message="secondary code empty")
                                 return None, None
 
-                            code2_resp = _validate_email_otp_with_401_backoff(
-                                session=s_log,
+                            _increment_counter(
+                                run_ctx,
+                                "email_otp_validate_count",
+                                event_type="email_otp_validated",
+                                phase="email_otp",
+                                message="二次安全验证 OTP",
+                                snapshot={"stage": "submit"},
+                            )
+                            code2_sentinel_otp = generate_payload(
                                 did=log_did,
-                                ctx=log_ctx,
+                                flow="authorize_continue",
                                 proxy=proxy,
                                 user_agent=current_ua,
-                                referer="https://auth.openai.com/email-verification",
-                                email=email,
-                                email_jwt=email_jwt,
-                                processed_mail_ids=processed_mails,
-                                mail_state=mail_state,
-                                code=code2,
+                                impersonate="chrome110",
+                                ctx=log_ctx,
+                            )
+                            val_headers = _oai_headers(log_did, {
+                                "Referer": "https://auth.openai.com/email-verification",
+                                "content-type": "application/json",
+                            })
+                            if code2_sentinel_otp:
+                                val_headers["openai-sentinel-token"] = code2_sentinel_otp
+
+                            code2_resp = _post_with_retry(
+                                s_log,
+                                "https://auth.openai.com/api/accounts/email-otp/validate",
+                                headers=val_headers,
+                                json_body={"code": code2},
                                 proxies=proxies,
-                                label="二次安全验证 OTP",
-                                run_ctx=run_ctx,
                             )
                             if code2_resp.status_code != 200:
                                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）二次安全验证 OTP 校验失败: {code2_resp.status_code}")
