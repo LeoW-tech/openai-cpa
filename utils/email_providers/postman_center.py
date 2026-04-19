@@ -50,7 +50,7 @@ class PostmanFleet:
             global_code_pool.clear()
         print(f"[{cfg.ts()}] [INFO] 🛑 邮局总管已下达停工令，所有邮递员准备下班。")
 
-    def add_mailbox_listener(self, ms_service, master_mailbox):
+    def ensure_mailbox_listener(self, ms_service, master_mailbox):
         master_email = master_mailbox.get('master_email') or master_mailbox.get('email')
         from utils.email_providers.mail_service import mask_email
         with self.fleet_lock:
@@ -70,8 +70,22 @@ class PostmanFleet:
 
         print(f"[{cfg.ts()}] [INFO] 📮 派发新邮递员！开始专属监听: {mask_email(master_email)}")
 
+    def add_mailbox_listener(self, ms_service, master_mailbox):
+        self.ensure_mailbox_listener(ms_service, master_mailbox)
+
+    def stop_mailbox_listener(self, master_email):
+        normalized_email = str(master_email or "").strip().lower()
+        if not normalized_email:
+            return
+
+        stop_event = None
+        with self.fleet_lock:
+            stop_event = self.postman_signals.pop(normalized_email, None)
+        if stop_event:
+            stop_event.set()
+
     def _exclusive_postman_worker(self, ms_service, master_mailbox, stop_event):
-        master_email = master_mailbox.get('master_email') or master_mailbox.get('email')
+        master_email = str(master_mailbox.get('master_email') or master_mailbox.get('email') or "").strip().lower()
         while not getattr(cfg, 'GLOBAL_STOP', False) and not stop_event.is_set():
             try:
                 messages = ms_service.fetch_openai_messages(master_mailbox)
@@ -114,6 +128,10 @@ class PostmanFleet:
                 if getattr(cfg, 'GLOBAL_STOP', False) or stop_event.is_set():
                     break
                 time.sleep(0.5)
+        with self.fleet_lock:
+            current_event = self.postman_signals.get(master_email)
+            if current_event is stop_event:
+                self.postman_signals.pop(master_email, None)
         from utils.email_providers.mail_service import mask_email
         print(f"[{cfg.ts()}] [INFO] 🛑 ({mask_email(master_email)}) 的专属邮递员已下班，屏幕前的你下班了吗？。")
 

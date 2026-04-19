@@ -9,6 +9,7 @@ import base64
 import email as email_lib
 from email.header import decode_header
 from typing import List, Optional, Dict, Any
+import httpx
 from curl_cffi import requests as cffi_requests
 from utils import config as cfg
 from utils import db_manager
@@ -33,6 +34,30 @@ class LocalMicrosoftService:
         self.proxies = proxies
         self.token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
         self.graph_base_url = "https://graph.microsoft.com/v1.0/me"
+
+    def _resolve_proxy(self) -> Optional[str]:
+        if isinstance(self.proxies, dict):
+            return self.proxies.get("https") or self.proxies.get("http")
+        if self.proxies:
+            return str(self.proxies).strip()
+        return None
+
+    def _build_http_client(self) -> httpx.Client:
+        proxy = self._resolve_proxy()
+        return httpx.Client(
+            proxy=proxy,
+            timeout=15.0,
+            follow_redirects=True,
+            http2=True,
+        )
+
+    @staticmethod
+    def _safe_json(resp: Any) -> Any:
+        try:
+            return resp.json()
+        except Exception:
+            text = getattr(resp, "text", "")
+            return {"raw_text": text} if text else {}
 
     def _resolve_suffix_mode(self) -> str:
         mode = str(getattr(cfg, "LOCAL_MS_SUFFIX_MODE", "fixed") or "fixed").strip().lower()
@@ -179,20 +204,15 @@ class LocalMicrosoftService:
                 "refresh_token": refresh_token,
                 "scope": current_scope
             }
-            return cffi_requests.post(
-                self.token_url,
-                data=payload,
-                proxies=self.proxies,
-                timeout=15,
-                impersonate="chrome110"
-            )
+            with self._build_http_client() as client:
+                return client.post(self.token_url, data=payload)
 
         resp = _do_token_request(scope_graph)
-        data = resp.json()
+        data = self._safe_json(resp)
         if resp.status_code != 200 and ("AADSTS70000" in str(data) or "invalid_scope" in str(data)):
             print(f"[{cfg.ts()}] [INFO] {mailbox['email']}] ⚠️ Graph 未授权，回退到基础/IMAP 兼容模式...")
             resp = _do_token_request(scope_fallback)
-            data = resp.json()
+            data = self._safe_json(resp)
             mailbox['token_type'] = 'legacy_imap'
         else:
             returned_scope = str(data.get("scope", "")).lower()
@@ -224,44 +244,64 @@ class LocalMicrosoftService:
                     raise MailboxAbuseModeError(target_email)
             raise RuntimeError(f"[{cfg.ts()}] [ERROR] 双令牌模式尝试均失败: {err_msg}")
 
-    def fetch_openai_messages(self, mailbox: dict) -> List[Dict[str, Any]]:
+    def _fetch_messages_graph(self, mailbox: dict, access_token: str) -> List[Dict[str, Any]]:
+        url = f"{self.graph_base_url}/messages"
+        params = {
+            "$select": "id,subject,from,toRecipients,receivedDateTime,body,bodyPreview",
+            "$orderby": "receivedDateTime desc",
+            "$top": 50
+        }
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        with self._build_http_client() as client:
+            resp = client.get(url, params=params, headers=headers)
+        data = self._safe_json(resp)
+        if resp.status_code != 200:
+            raise RuntimeError(f"[{cfg.ts()}] [ERROR] 扫信接口请求失败: {resp.status_code} | {data}")
+
         all_msgs = []
+        for m in data.get("value", []):
+            subject = str(m.get('subject', '')).lower()
+            sender = str(m.get('from', {}).get('emailAddress', {}).get('address', '')).lower()
+            if "openai" in sender or "openai" in subject:
+                all_msgs.append(m)
+        return all_msgs
+
+    def fetch_openai_messages(self, mailbox: dict) -> List[Dict[str, Any]]:
         try:
+            if mailbox.get('token_type') in ('outlook_legacy', 'legacy_imap'):
+                try:
+                    return self._fetch_via_imap(mailbox)
+                except Exception as e:
+                    print(f"[{cfg.ts()}] [ERROR] IMAP 拉信失败: {e}", flush=True)
+                    return []
+
+            try:
+                access_token = self._exchange_refresh_token(mailbox)
+            except MailboxAbuseModeError:
+                raise
+            except Exception as e:
+                print(f"[{cfg.ts()}] [ERROR] 令牌交换失败: {e}", flush=True)
+                return []
 
             if mailbox.get('token_type') in ('outlook_legacy', 'legacy_imap'):
-                return self._fetch_via_imap(mailbox)
-            access_token = self._exchange_refresh_token(mailbox)
-            if mailbox.get('token_type') in ('outlook_legacy', 'legacy_imap'):
-                return self._fetch_via_imap(mailbox)
-            url = f"{self.graph_base_url}/messages"
-            params = {
-                "$select": "id,subject,from,toRecipients,receivedDateTime,body,bodyPreview",
-                "$orderby": "receivedDateTime desc",
-                "$top": 50
-            }
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json"
-            }
-            resp = cffi_requests.get(url, params=params, headers=headers, proxies=self.proxies, timeout=15,
-                                     impersonate="chrome110")
-            if resp.status_code == 200:
-                raw_msgs = resp.json().get("value", [])
-                for i, m in enumerate(raw_msgs):
-                    subject = str(m.get('subject', '')).lower()
-                    sender = str(m.get('from', {}).get('emailAddress', {}).get('address', '')).lower()
-                    if "openai" in sender or "openai" in subject:
-                        all_msgs.append(m)
+                try:
+                    return self._fetch_via_imap(mailbox)
+                except Exception as e:
+                    print(f"[{cfg.ts()}] [ERROR] IMAP 拉信失败: {e}", flush=True)
+                    return []
 
-                return all_msgs
-            else:
-                print(f"[{cfg.ts()}] [ERROR] 扫信接口请求失败: {resp.status_code} | {resp.text}")
+            try:
+                return self._fetch_messages_graph(mailbox, access_token)
+            except Exception as e:
+                print(f"[{cfg.ts()}] [ERROR] Graph 拉信失败: {e}", flush=True)
+                return []
         except MailboxAbuseModeError as e:
             mailbox["_polling_stopped"] = "abuse_mode"
             print(str(e), flush=True)
-        except Exception as e:
-            print(f"[{cfg.ts()}] [DEBUG-GRAPH] 扫信模块严重错误: {e}", flush=True)
-        return all_msgs
+            return []
 
     def _fetch_via_imap(self, mailbox: dict, headers_only: bool = False) -> List[Dict[str, Any]]:
         all_msgs = []
@@ -278,9 +318,9 @@ class LocalMicrosoftService:
                 "refresh_token": refresh_token,
                 "scope": "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
             }
-            resp = cffi_requests.post(self.token_url, data=payload, proxies=self.proxies, timeout=15,
-                                      impersonate="chrome110")
-            data = resp.json()
+            with self._build_http_client() as client:
+                resp = client.post(self.token_url, data=payload)
+            data = self._safe_json(resp)
             if resp.status_code != 200:
                 return all_msgs
 

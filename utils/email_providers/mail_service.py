@@ -89,6 +89,65 @@ def get_last_email() -> Optional[str]:
     return getattr(_thread_data, 'last_attempt_email', None)
 
 
+def _derive_master_email_for_listener(email: str) -> str:
+    normalized = str(email or "").strip().lower()
+    if "@" not in normalized:
+        return normalized
+    user_part, domain_part = normalized.split("@", 1)
+    if "+" in user_part:
+        user_part = user_part.split("+", 1)[0]
+    return f"{user_part}@{domain_part}"
+
+
+def ensure_local_microsoft_listener(
+        email: str,
+        jwt: Any = "",
+        proxies: Any = None,
+        ms_service: Any = None,
+):
+    mailbox = None
+    if isinstance(jwt, dict):
+        mailbox = dict(jwt)
+    else:
+        try:
+            parsed = json.loads(jwt or "{}")
+            if isinstance(parsed, dict):
+                mailbox = parsed
+        except Exception:
+            mailbox = None
+
+    if not mailbox:
+        return None
+
+    mailbox["email"] = str(mailbox.get("email") or email).strip()
+    mailbox["master_email"] = str(mailbox.get("master_email") or _derive_master_email_for_listener(mailbox["email"])).strip().lower()
+    if ms_service is None:
+        from utils.email_providers.local_microsoft_service import LocalMicrosoftService
+        ms_service = LocalMicrosoftService(proxies=proxies)
+    global_postman_fleet.ensure_mailbox_listener(ms_service, mailbox)
+    return mailbox
+
+
+def stop_local_microsoft_listener(email: str, jwt: Any = ""):
+    mailbox = None
+    if isinstance(jwt, dict):
+        mailbox = jwt
+    else:
+        try:
+            parsed = json.loads(jwt or "{}")
+            if isinstance(parsed, dict):
+                mailbox = parsed
+        except Exception:
+            mailbox = None
+
+    master_email = ""
+    if isinstance(mailbox, dict):
+        master_email = str(mailbox.get("master_email") or mailbox.get("email") or "").strip().lower()
+    if not master_email:
+        master_email = _derive_master_email_for_listener(email)
+    global_postman_fleet.stop_mailbox_listener(master_email)
+
+
 def _smart_sleep(secs):
     for _ in range(int(secs * 10)):
         if getattr(cfg, 'GLOBAL_STOP', False):
@@ -438,7 +497,7 @@ def get_email_and_token(proxies: Any = None) -> tuple:
         email = mailbox_info["email"]
         set_last_email(email)
         print(f"[{cfg.ts()}] [INFO] 微软库分配并锁定账号: ({mask_email(email)})")
-        global_postman_fleet.add_mailbox_listener(ms_service, mailbox_info)
+        global_postman_fleet.ensure_mailbox_listener(ms_service, mailbox_info)
         return email, json.dumps(mailbox_info, ensure_ascii=False)
 
     prefix, ai_enabled = _get_ai_data_package()
@@ -893,22 +952,31 @@ def get_oai_code(
 
         if local_ms_account:
             local_ms_account["email"] = str(local_ms_account.get("email") or email).strip()
-            timeout = max(5, max_attempts * 3)
-            fast_code = wait_for_code(email, timeout=timeout)
-            if fast_code:
-                return fast_code
-
             from utils.email_providers.local_microsoft_service import LocalMicrosoftService
             ms_service = LocalMicrosoftService(proxies=mail_proxies)
-
-            return _poll_local_ms_for_oai_code_graph(
+            listener_mailbox = ensure_local_microsoft_listener(
+                email=email,
+                jwt=local_ms_account,
+                proxies=mail_proxies,
                 ms_service=ms_service,
-                target_email=email,
-                mailbox_dict=local_ms_account,
-                processed_mail_ids=processed_mail_ids,
-                mail_state=mail_state,
-                max_attempts=max_attempts,
-            )
+            ) or local_ms_account
+
+            try:
+                timeout = max(5, max_attempts * 3)
+                fast_code = wait_for_code(email, timeout=timeout)
+                if fast_code:
+                    return fast_code
+
+                return _poll_local_ms_for_oai_code_graph(
+                    ms_service=ms_service,
+                    target_email=email,
+                    mailbox_dict=listener_mailbox,
+                    processed_mail_ids=processed_mail_ids,
+                    mail_state=mail_state,
+                    max_attempts=max_attempts,
+                )
+            finally:
+                stop_local_microsoft_listener(email, listener_mailbox)
         else:
             print(f"\n[{cfg.ts()}] [ERROR] 缺少微软邮箱凭据，无法收信。")
             return ""

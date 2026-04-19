@@ -78,23 +78,25 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
             with patch.object(core_engine, "send_tg_msg_sync"):
                 with patch.object(core_engine.mail_service, "get_last_email", return_value="demo@example.com"):
                     with patch.object(core_engine.registration_history, "finish_attempt") as finish_attempt:
-                        run_ctx = {
-                            "analytics_attempt_id": 77,
-                            "analytics_started_monotonic": 100.0,
-                            "phone_gate_hit": True,
-                            "phone_otp_entered": True,
-                            "phone_otp_success": True,
-                            "sub2api_proxy_name": "JP-01",
-                        }
-                        with patch.object(core_engine.time, "time", return_value=104.25):
-                            status = core_engine.handle_registration_result(
-                                result,
-                                cpa_upload=False,
-                                run_ctx=run_ctx,
-                            )
+                        with patch.object(core_engine.mail_service, "stop_local_microsoft_listener", create=True) as stop_listener:
+                            run_ctx = {
+                                "analytics_attempt_id": 77,
+                                "analytics_started_monotonic": 100.0,
+                                "phone_gate_hit": True,
+                                "phone_otp_entered": True,
+                                "phone_otp_success": True,
+                                "sub2api_proxy_name": "JP-01",
+                            }
+                            with patch.object(core_engine.time, "time", return_value=104.25):
+                                status = core_engine.handle_registration_result(
+                                    result,
+                                    cpa_upload=False,
+                                    run_ctx=run_ctx,
+                                )
 
         self.assertEqual("success", status)
         finish_attempt.assert_called_once()
+        stop_listener.assert_called_once_with("demo@example.com")
         kwargs = finish_attempt.call_args.kwargs
         self.assertEqual(77, finish_attempt.call_args.args[0])
         self.assertEqual("success", kwargs["final_status"])

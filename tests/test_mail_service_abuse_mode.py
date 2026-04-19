@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 import types
 import unittest
@@ -20,7 +21,7 @@ sys.modules.setdefault(
     types.SimpleNamespace(DuckMailService=object),
 )
 
-from utils.email_providers.mail_service import _extract_otp_code, _poll_local_ms_for_oai_code_graph
+from utils.email_providers.mail_service import _extract_otp_code, _poll_local_ms_for_oai_code_graph, get_oai_code
 
 
 class _AbuseStopService:
@@ -66,6 +67,68 @@ def _graph_message(
 
 
 class MailServiceAbuseModeTests(unittest.TestCase):
+    def test_get_oai_code_stops_listener_after_fast_code_success(self):
+        mailbox = {
+            "email": "user+alias@example.com",
+            "master_email": "user@example.com",
+            "refresh_token": "refresh-token",
+            "client_id": "client-id",
+        }
+
+        with patch("utils.email_providers.mail_service.cfg.EMAIL_API_MODE", "local_microsoft"):
+            with patch("utils.email_providers.mail_service.wait_for_code", return_value="654321"):
+                with patch(
+                    "utils.email_providers.mail_service.ensure_local_microsoft_listener",
+                    create=True,
+                ) as ensure_listener:
+                    with patch(
+                        "utils.email_providers.mail_service.stop_local_microsoft_listener",
+                        create=True,
+                    ) as stop_listener:
+                        code = get_oai_code(
+                            "user+alias@example.com",
+                            jwt=json.dumps(mailbox),
+                            proxies={"https": "http://127.0.0.1:41001"},
+                            max_attempts=2,
+                        )
+
+        self.assertEqual("654321", code)
+        ensure_listener.assert_called_once()
+        stop_listener.assert_called_once()
+
+    def test_get_oai_code_stops_listener_after_empty_result(self):
+        mailbox = {
+            "email": "user+alias@example.com",
+            "master_email": "user@example.com",
+            "refresh_token": "refresh-token",
+            "client_id": "client-id",
+        }
+
+        with patch("utils.email_providers.mail_service.cfg.EMAIL_API_MODE", "local_microsoft"):
+            with patch("utils.email_providers.mail_service.wait_for_code", return_value=""):
+                with patch(
+                    "utils.email_providers.mail_service.ensure_local_microsoft_listener",
+                    create=True,
+                ) as ensure_listener:
+                    with patch(
+                        "utils.email_providers.mail_service.stop_local_microsoft_listener",
+                        create=True,
+                    ) as stop_listener:
+                        with patch(
+                            "utils.email_providers.mail_service._poll_local_ms_for_oai_code_graph",
+                            return_value="",
+                        ):
+                            code = get_oai_code(
+                                "user+alias@example.com",
+                                jwt=json.dumps(mailbox),
+                                proxies={"https": "http://127.0.0.1:41001"},
+                                max_attempts=2,
+                            )
+
+        self.assertEqual("", code)
+        ensure_listener.assert_called_once()
+        stop_listener.assert_called_once()
+
     def test_extract_otp_code_ignores_openai_template_css_digits(self):
         html = """
         <html>
