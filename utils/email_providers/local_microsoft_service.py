@@ -48,7 +48,6 @@ class LocalMicrosoftService:
             proxy=proxy,
             timeout=15.0,
             follow_redirects=True,
-            http2=True,
         )
 
     @staticmethod

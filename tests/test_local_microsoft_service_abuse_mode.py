@@ -75,6 +75,7 @@ class LocalMicrosoftServiceAbuseModeTests(unittest.TestCase):
         self.assertEqual("access-token", token)
         self.assertEqual("graph_full", mailbox["token_type"])
         client_cls.assert_called_once()
+        self.assertNotIn("http2", client_cls.call_args.kwargs)
         self.assertEqual("refresh-token-2", mailbox["refresh_token"])
 
     def test_fetch_openai_messages_uses_httpx_graph_client_instead_of_curl_cffi(self):
@@ -118,6 +119,7 @@ class LocalMicrosoftServiceAbuseModeTests(unittest.TestCase):
         self.assertEqual(1, len(messages))
         self.assertEqual("msg-1", messages[0]["id"])
         client_cls.assert_called_once()
+        self.assertNotIn("http2", client_cls.call_args.kwargs)
 
     def test_service_abuse_mode_marks_master_mailbox_dead(self):
         service = LocalMicrosoftService()
