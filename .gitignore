@@ -10,6 +10,7 @@ luckmail/__pycache__/
 .idea/
 .vscode/
 .venv/
+.DS_Store
 
 # 本地数据库和日志
 data/
