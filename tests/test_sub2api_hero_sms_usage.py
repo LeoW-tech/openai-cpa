@@ -73,6 +73,27 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
         self.assertEqual("success", status)
         self.assertIs(True, run_ctx["local_account_saved"])
 
+    def test_handle_registration_result_emits_celebratory_safe_store_log(self):
+        core_engine = self._reload_core_engine()
+        result = (json.dumps({"email": "demo@example.com"}), "Password123!")
+        captured_logs = []
+
+        with patch.dict(
+            sys.modules,
+            {
+                "global_state": types.SimpleNamespace(append_log=captured_logs.append),
+            },
+        ):
+            with patch.object(core_engine.db_manager, "save_account_to_db", return_value=True):
+                with patch.object(core_engine, "send_tg_msg_sync"):
+                    with patch.object(core_engine.mail_service, "get_last_email", return_value="demo@example.com"):
+                        status = core_engine.handle_registration_result(result, cpa_upload=False, run_ctx={})
+
+        self.assertEqual("success", status)
+        self.assertTrue(
+            any("🎉🎉🥳🥳🎊✨🔥 账号密码与 Token 已安全存入: demo@example.com" in log for log in captured_logs)
+        )
+
     def test_handle_registration_result_marks_local_save_failure(self):
         core_engine = self._reload_core_engine()
         result = (json.dumps({"email": "demo@example.com"}), "Password123!")
@@ -150,6 +171,20 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
         self.assertEqual("ok", msg)
         self.assertEqual("🇯🇵 日本W03 | IEPL", token_dict["sub2api_proxy_name"])
         self.assertEqual("🇯🇵 日本W03 | IEPL", client.payload["sub2api_proxy_name"])
+
+    def test_log_sub2api_restock_success_emits_celebratory_log(self):
+        core_engine = self._reload_core_engine()
+        captured_logs = []
+
+        with patch.dict(
+            sys.modules,
+            {
+                "global_state": types.SimpleNamespace(append_log=captured_logs.append),
+            },
+        ):
+            core_engine._log_sub2api_restock_success()
+
+        self.assertTrue(any("🚀🚀🎊🥳✨🔥 Sub2API 补货入库成功" in log for log in captured_logs))
 
 
 if __name__ == "__main__":
