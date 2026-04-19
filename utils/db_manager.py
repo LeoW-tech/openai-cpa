@@ -184,6 +184,7 @@ def init_db():
                 started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 finished_at TIMESTAMP,
                 total_duration_ms INTEGER,
+                token_wait_duration_ms INTEGER,
                 email_otp_duration_ms INTEGER,
                 phone_otp_duration_ms INTEGER,
                 oauth_duration_ms INTEGER,
@@ -286,6 +287,7 @@ def init_db():
         except Exception:
             pass
         for alter_sql in (
+            'ALTER TABLE registration_attempts ADD COLUMN token_wait_duration_ms INTEGER;',
             'ALTER TABLE registration_attempts ADD COLUMN source_node_name TEXT;',
             'ALTER TABLE registration_attempts ADD COLUMN external_attempt_id TEXT;',
             'ALTER TABLE registration_attempts ADD COLUMN token_fingerprint TEXT;',

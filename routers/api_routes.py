@@ -295,6 +295,8 @@ async def start_task(token: str = Depends(verify_token)):
         config_snapshot={
             "email_api_mode": getattr(core_engine.cfg, "EMAIL_API_MODE", ""),
             "reg_mode": getattr(core_engine.cfg, "REG_MODE", "protocol"),
+            "login_delay_min": getattr(core_engine.cfg, "LOGIN_DELAY_MIN", 20),
+            "login_delay_max": getattr(core_engine.cfg, "LOGIN_DELAY_MAX", 45),
         },
     )
     if getattr(core_engine.cfg, 'ENABLE_CPA_MODE', False):
@@ -1355,6 +1357,8 @@ def ext_reset_stats(token: str = Depends(verify_token)):
         config_snapshot={
             "reg_mode": getattr(core_engine.cfg, "REG_MODE", "extension"),
             "email_api_mode": getattr(core_engine.cfg, "EMAIL_API_MODE", ""),
+            "login_delay_min": getattr(core_engine.cfg, "LOGIN_DELAY_MIN", 20),
+            "login_delay_max": getattr(core_engine.cfg, "LOGIN_DELAY_MAX", 45),
         },
     )
     return {"status": "success"}

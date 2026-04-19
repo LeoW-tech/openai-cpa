@@ -176,6 +176,7 @@ def _history_event(
         *,
         event_type: str,
         phase: str = "",
+        elapsed_ms: Optional[int] = None,
         ok_flag: Optional[bool] = None,
         http_status: Optional[int] = None,
         reason_code: str = "",
@@ -189,6 +190,7 @@ def _history_event(
             run_ctx,
             event_type=event_type,
             phase=phase,
+            elapsed_ms=elapsed_ms,
             ok_flag=ok_flag,
             http_status=http_status,
             reason_code=reason_code,
@@ -201,6 +203,7 @@ def _history_event(
         attempt_id,
         event_type=event_type,
         phase=phase,
+        elapsed_ms=elapsed_ms,
         ok_flag=ok_flag,
         http_status=http_status,
         reason_code=reason_code,
@@ -232,6 +235,27 @@ def _record_pending_account_registration(
         ok_flag=True,
         message=str(email or "").strip().lower(),
         snapshot={"has_password": bool(password)},
+    )
+
+
+def _record_token_wait_history(run_ctx: Optional[dict], *, wait_seconds: int) -> None:
+    try:
+        normalized_wait_seconds = max(0, int(wait_seconds))
+    except (TypeError, ValueError):
+        return
+    if normalized_wait_seconds <= 0:
+        return
+
+    wait_duration_ms = normalized_wait_seconds * 1000
+    _history_patch(run_ctx, token_wait_duration_ms=wait_duration_ms)
+    _history_event(
+        run_ctx,
+        event_type="token_wait_scheduled",
+        phase="token",
+        elapsed_ms=wait_duration_ms,
+        ok_flag=True,
+        message=f"{normalized_wait_seconds}s",
+        snapshot={"wait_seconds": normalized_wait_seconds, "wait_duration_ms": wait_duration_ms},
     )
 
 
@@ -1263,6 +1287,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                 wait_time = random.randint(cfg.LOGIN_DELAY_MIN, cfg.LOGIN_DELAY_MAX)
                 print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）账号已通过，等待 {wait_time} 秒后同步最终状态...")
+                _record_token_wait_history(run_ctx, wait_seconds=wait_time)
                 if cfg.SAVE_TO_LOCAL_IN_CPA_MODE:
                     _record_pending_account_registration(
                         email=email,

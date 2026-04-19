@@ -54,6 +54,7 @@ class RegistrationHistoryTests(unittest.TestCase):
                 for row in conn.execute("PRAGMA table_info(registration_attempts)").fetchall()
             }
 
+        self.assertIn("token_wait_duration_ms", columns)
         self.assertIn("phone_number_full", columns)
         self.assertIn("phone_number_e164", columns)
         self.assertIn("phone_country_calling_code", columns)
@@ -68,6 +69,107 @@ class RegistrationHistoryTests(unittest.TestCase):
         self.assertIn("phone_bind_failure_reason", columns)
         self.assertIn("phone_bind_stage", columns)
         self.assertIn("account_registered_flag", columns)
+
+    def test_init_db_backfills_token_wait_duration_column_for_legacy_database(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DROP TABLE IF EXISTS registration_attempts")
+            conn.execute(
+                """
+                CREATE TABLE registration_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER,
+                    task_id TEXT,
+                    worker_id TEXT,
+                    source_mode TEXT,
+                    source_node_name TEXT,
+                    external_attempt_id TEXT,
+                    token_fingerprint TEXT,
+                    attempt_no INTEGER DEFAULT 1,
+                    flow_type TEXT,
+                    legacy_backfill INTEGER DEFAULT 0,
+                    linked_account_email TEXT,
+                    linked_account_created_at TIMESTAMP,
+                    email_full TEXT,
+                    email_local_part TEXT,
+                    email_domain TEXT,
+                    master_email TEXT,
+                    email_provider_type TEXT,
+                    email_provider_detail TEXT,
+                    proxy_url TEXT,
+                    proxy_name TEXT,
+                    exit_ip TEXT,
+                    geo_country_code TEXT,
+                    geo_country_name TEXT,
+                    geo_region_name TEXT,
+                    geo_city_name TEXT,
+                    geo_isp TEXT,
+                    geo_asn TEXT,
+                    geo_source TEXT,
+                    geo_status TEXT,
+                    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    finished_at TIMESTAMP,
+                    total_duration_ms INTEGER,
+                    email_otp_duration_ms INTEGER,
+                    phone_otp_duration_ms INTEGER,
+                    oauth_duration_ms INTEGER,
+                    account_create_duration_ms INTEGER,
+                    callback_duration_ms INTEGER,
+                    final_status TEXT,
+                    success_flag INTEGER DEFAULT 0,
+                    retry_403_flag INTEGER DEFAULT 0,
+                    signup_blocked_flag INTEGER DEFAULT 0,
+                    pwd_blocked_flag INTEGER DEFAULT 0,
+                    phone_gate_hit_flag INTEGER DEFAULT 0,
+                    phone_otp_entered_flag INTEGER DEFAULT 0,
+                    phone_otp_success_flag INTEGER DEFAULT 0,
+                    email_otp_send_count INTEGER DEFAULT 0,
+                    email_otp_resend_count INTEGER DEFAULT 0,
+                    email_otp_validate_count INTEGER DEFAULT 0,
+                    email_otp_401_retry_count INTEGER DEFAULT 0,
+                    phone_otp_send_count INTEGER DEFAULT 0,
+                    phone_otp_validate_count INTEGER DEFAULT 0,
+                    phone_otp_provider TEXT,
+                    phone_otp_country TEXT,
+                    phone_reuse_used_flag INTEGER DEFAULT 0,
+                    phone_number_full TEXT,
+                    phone_number_e164 TEXT,
+                    phone_country_calling_code TEXT,
+                    phone_country_iso TEXT,
+                    phone_country_name TEXT,
+                    phone_national_number TEXT,
+                    phone_activation_id TEXT,
+                    phone_bind_provider TEXT,
+                    phone_bind_attempted_flag INTEGER DEFAULT 0,
+                    phone_bind_success_flag INTEGER DEFAULT 0,
+                    phone_bind_failed_flag INTEGER DEFAULT 0,
+                    phone_bind_failure_reason TEXT,
+                    phone_bind_stage TEXT,
+                    account_registered_flag INTEGER DEFAULT 0,
+                    local_save_ok INTEGER DEFAULT 0,
+                    cpa_upload_ok INTEGER DEFAULT 0,
+                    sub2api_push_ok INTEGER DEFAULT 0,
+                    failure_stage TEXT,
+                    failure_code TEXT,
+                    failure_message TEXT,
+                    last_continue_url TEXT,
+                    last_http_status INTEGER,
+                    labels_json TEXT,
+                    metrics_json TEXT,
+                    result_snapshot_json TEXT
+                )
+                """
+            )
+            conn.commit()
+
+        self.db_manager.init_db()
+
+        with sqlite3.connect(self.db_path) as conn:
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(registration_attempts)").fetchall()
+            }
+
+        self.assertIn("token_wait_duration_ms", columns)
 
     def test_history_service_records_attempt_and_events(self):
         run_id = self.history.start_run(
@@ -148,6 +250,29 @@ class RegistrationHistoryTests(unittest.TestCase):
         self.assertEqual("worker-A", run_row[1])
         self.assertEqual({"finished": True}, json.loads(run_row[2]))
 
+    def test_start_run_persists_login_delay_config_snapshot(self):
+        run_id = self.history.start_run(
+            source_mode="normal",
+            target_count=2,
+            trigger_source="unit-test",
+            config_snapshot={
+                "email_api_mode": "mailbox",
+                "reg_mode": "protocol",
+                "login_delay_min": 20,
+                "login_delay_max": 45,
+            },
+        )
+
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT config_snapshot_json FROM registration_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+
+        snapshot = json.loads(row[0] or "{}")
+        self.assertEqual(20, snapshot["login_delay_min"])
+        self.assertEqual(45, snapshot["login_delay_max"])
+
     def test_backfill_accounts_creates_legacy_attempts(self):
         legacy_password = "unit-test-pass"
         token_data = json.dumps(
@@ -186,6 +311,56 @@ class RegistrationHistoryTests(unittest.TestCase):
         self.assertEqual("US-W01", row[3])
         self.assertEqual(1, row[4])
         self.assertEqual("success", row[5])
+
+    def test_list_attempts_and_export_include_token_wait_duration_ms(self):
+        run_id = self.history.start_run(source_mode="normal", target_count=0, trigger_source="unit-test")
+        attempt_id = self.history.start_attempt(
+            run_id=run_id,
+            source_mode="normal",
+            attempt_no=1,
+            flow_type="register",
+            email="wait@example.com",
+            proxy_name="US-01",
+            auto_capture_network=False,
+        )
+        self.history.patch_attempt(attempt_id, token_wait_duration_ms=30000)
+        self.history.finish_attempt(
+            attempt_id,
+            final_status="success",
+            success_flag=True,
+            total_duration_ms=45000,
+        )
+
+        attempts_payload = self.history.list_attempts({})
+        exported_json = json.loads(self.history.export_attempts({}, export_format="json"))
+        exported_csv = self.history.export_attempts({}, export_format="csv")
+
+        self.assertEqual(30000, attempts_payload["rows"][0]["token_wait_duration_ms"])
+        self.assertEqual(30000, exported_json[0]["token_wait_duration_ms"])
+        self.assertIn("token_wait_duration_ms", exported_csv.splitlines()[0])
+
+    def test_token_wait_duration_stays_empty_when_wait_not_recorded(self):
+        attempt_id = self.history.start_attempt(
+            source_mode="normal",
+            attempt_no=1,
+            flow_type="register",
+            email="failed@example.com",
+            proxy_name="US-02",
+            auto_capture_network=False,
+        )
+        self.history.finish_attempt(
+            attempt_id,
+            final_status="failed",
+            success_flag=False,
+        )
+
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT token_wait_duration_ms FROM registration_attempts WHERE id = ?",
+                (attempt_id,),
+            ).fetchone()
+
+        self.assertIsNone(row[0])
 
     def test_distribution_and_overview_use_attempts_as_denominator(self):
         run_id = self.history.start_run(source_mode="normal", target_count=0, trigger_source="unit-test")
