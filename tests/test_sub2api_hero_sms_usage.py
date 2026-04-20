@@ -186,6 +186,57 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
 
         self.assertTrue(any("🚀🚀🎊🥳✨🔥 Sub2API 补货入库成功" in log for log in captured_logs))
 
+    def test_borrow_proxy_queue_item_unwraps_generation_tuple(self):
+        core_engine = self._reload_core_engine()
+        original_queue = list(core_engine.cfg.PROXY_QUEUE.queue)
+        original_unfinished_tasks = core_engine.cfg.PROXY_QUEUE.unfinished_tasks
+
+        try:
+            with core_engine.cfg.PROXY_QUEUE.mutex:
+                core_engine.cfg.PROXY_QUEUE.queue.clear()
+                core_engine.cfg.PROXY_QUEUE.unfinished_tasks = 0
+                core_engine.cfg.PROXY_QUEUE.all_tasks_done.notify_all()
+
+            core_engine.cfg.PROXY_QUEUE.put((7, "http://127.0.0.1:41001"))
+            borrowed_generation, proxy = core_engine._borrow_proxy_queue_item()
+
+            self.assertEqual(7, borrowed_generation)
+            self.assertEqual("http://127.0.0.1:41001", proxy)
+        finally:
+            with core_engine.cfg.PROXY_QUEUE.mutex:
+                core_engine.cfg.PROXY_QUEUE.queue.clear()
+                core_engine.cfg.PROXY_QUEUE.unfinished_tasks = original_unfinished_tasks
+                for item in original_queue:
+                    core_engine.cfg.PROXY_QUEUE.queue.append(item)
+                if core_engine.cfg.PROXY_QUEUE.unfinished_tasks == 0:
+                    core_engine.cfg.PROXY_QUEUE.all_tasks_done.notify_all()
+
+    def test_return_proxy_queue_item_requeues_generation_wrapped_proxy(self):
+        core_engine = self._reload_core_engine()
+        original_queue = list(core_engine.cfg.PROXY_QUEUE.queue)
+        original_unfinished_tasks = core_engine.cfg.PROXY_QUEUE.unfinished_tasks
+
+        try:
+            with core_engine.cfg.PROXY_QUEUE.mutex:
+                core_engine.cfg.PROXY_QUEUE.queue.clear()
+                core_engine.cfg.PROXY_QUEUE.unfinished_tasks = 0
+                core_engine.cfg.PROXY_QUEUE.all_tasks_done.notify_all()
+
+            core_engine.cfg.PROXY_QUEUE.put((9, "http://127.0.0.1:41009"))
+            borrowed_generation, proxy = core_engine._borrow_proxy_queue_item()
+            core_engine._return_proxy_queue_item(proxy, borrowed_generation, preserve_stale=True)
+
+            self.assertEqual([(9, "http://127.0.0.1:41009")], list(core_engine.cfg.PROXY_QUEUE.queue))
+            self.assertEqual(1, core_engine.cfg.PROXY_QUEUE.unfinished_tasks)
+        finally:
+            with core_engine.cfg.PROXY_QUEUE.mutex:
+                core_engine.cfg.PROXY_QUEUE.queue.clear()
+                core_engine.cfg.PROXY_QUEUE.unfinished_tasks = original_unfinished_tasks
+                for item in original_queue:
+                    core_engine.cfg.PROXY_QUEUE.queue.append(item)
+                if core_engine.cfg.PROXY_QUEUE.unfinished_tasks == 0:
+                    core_engine.cfg.PROXY_QUEUE.all_tasks_done.notify_all()
+
 
 if __name__ == "__main__":
     unittest.main()

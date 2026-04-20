@@ -64,6 +64,17 @@ class RegisterEmailProviderShapeTests(unittest.TestCase):
         set_failure_mock.assert_called_once()
         self.assertEqual("email_acquire", set_failure_mock.call_args.kwargs["stage"])
 
+    def test_run_accepts_tuple_proxy_queue_items(self):
+        with patch.object(self.register, "_skip_net_check", return_value=True), \
+             patch.object(self.register, "get_email_and_token", return_value=None), \
+             patch.object(self.register, "_set_failure") as set_failure_mock:
+            with redirect_stdout(io.StringIO()):
+                result = self.register.run((3, "http://127.0.0.1:7890"))
+
+        self.assertEqual((None, None), result)
+        set_failure_mock.assert_called_once()
+        self.assertEqual("email_acquire", set_failure_mock.call_args.kwargs["stage"])
+
 
 if __name__ == "__main__":
     unittest.main()

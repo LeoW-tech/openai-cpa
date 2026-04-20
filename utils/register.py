@@ -655,10 +655,20 @@ def _parse_workspace_from_auth_cookie(auth_cookie: str) -> list:
     return claims.get("workspaces") or []
 
 
+def _normalize_proxy_input(proxy: Optional[str]):
+    if isinstance(proxy, (tuple, list)):
+        if len(proxy) >= 2:
+            return proxy[1]
+        if proxy:
+            return proxy[0]
+        return None
+    return proxy
+
+
 def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
     processed_mails: set = set()
     mail_state: dict = {}
-    proxy = cfg.format_docker_url(proxy)
+    proxy = cfg.format_docker_url(_normalize_proxy_input(proxy))
     if proxy and proxy.startswith("socks5://"):
         proxy = proxy.replace("socks5://", "socks5h://")
     proxies = {"http": proxy, "https": proxy} if proxy else None
