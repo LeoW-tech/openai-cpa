@@ -4,17 +4,7 @@ import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-# Stub heavy third-party and project dependencies so we can import
-# RegEngine without installing the full runtime stack.
 _stubs = {
-    "yaml": types.SimpleNamespace(
-        safe_load=lambda *a, **kw: {},
-        safe_dump=lambda *a, **kw: "",
-    ),
-    "curl_cffi": types.SimpleNamespace(
-        requests=types.SimpleNamespace(Session=object),
-        CurlMime=object,
-    ),
     "utils.email_providers.mail_service": types.SimpleNamespace(
         mask_email=lambda value: value,
     ),
@@ -34,10 +24,9 @@ _stubs = {
         send_tg_msg_sync=lambda *args, **kwargs: None,
     ),
 }
-for mod_name, stub in _stubs.items():
-    sys.modules[mod_name] = stub
 
-from utils.core_engine import RegEngine
+with patch.dict(sys.modules, _stubs, clear=False):
+    from utils.core_engine import RegEngine
 
 
 class RegEngineExecutorCleanupTests(unittest.TestCase):

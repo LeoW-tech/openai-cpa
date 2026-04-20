@@ -6,7 +6,10 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 fake_requests_module = types.SimpleNamespace(post=None, get=None, Response=object)
-sys.modules.setdefault("curl_cffi", types.SimpleNamespace(requests=fake_requests_module))
+try:
+    import curl_cffi  # noqa: F401
+except Exception:
+    sys.modules["curl_cffi"] = types.SimpleNamespace(requests=fake_requests_module)
 
 from utils.email_providers.local_microsoft_service import LocalMicrosoftService, MailboxAbuseModeError
 

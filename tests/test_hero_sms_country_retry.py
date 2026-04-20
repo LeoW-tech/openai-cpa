@@ -6,7 +6,10 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 fake_requests_module = types.SimpleNamespace(get=None, post=None, Session=object)
-sys.modules.setdefault("curl_cffi", types.SimpleNamespace(requests=fake_requests_module))
+try:
+    import curl_cffi  # noqa: F401
+except Exception:
+    sys.modules["curl_cffi"] = types.SimpleNamespace(requests=fake_requests_module)
 sys.modules.setdefault(
     "utils.db_manager",
     types.SimpleNamespace(

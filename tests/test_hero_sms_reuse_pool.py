@@ -8,7 +8,10 @@ from unittest.mock import ANY
 from unittest.mock import patch
 
 fake_requests_module = types.SimpleNamespace(get=None, post=None, Session=object, Response=object)
-sys.modules["curl_cffi"] = types.SimpleNamespace(requests=fake_requests_module, CurlMime=object)
+try:
+    import curl_cffi  # noqa: F401
+except Exception:
+    sys.modules["curl_cffi"] = types.SimpleNamespace(requests=fake_requests_module, CurlMime=object)
 
 
 class HeroSmsReusePoolTests(unittest.TestCase):
