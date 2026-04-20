@@ -56,6 +56,10 @@ class PostmanFleet:
     def clear_fleet(self):
         stop_events = []
         with self.fleet_lock:
+            for master_email, stop_event in self.postman_signals.items():
+                stop_event.set()
+
+            self.postman_signals.clear()
             self.active_mailboxes.clear()
             stop_events = [entry["stop_event"] for entry in self.listener_registry.values()]
             self.listener_registry.clear()
@@ -109,7 +113,6 @@ class PostmanFleet:
             self.postman_signals[master_email] = stop_event
 
         thread.start()
-
         print(f"[{cfg.ts()}] [INFO] 📮 派发新邮递员！开始专属监听: {mask_email(master_email)}")
         return {"master_email": master_email, "ref_count": 1, "created": True}
 

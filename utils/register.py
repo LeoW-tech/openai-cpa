@@ -1,4 +1,5 @@
 import base64
+import gc
 import hashlib
 import json
 import os
@@ -743,6 +744,11 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
         MAX_REG_RETRIES = 2
 
         for attempt in range(MAX_REG_RETRIES):
+            if active_sessions:
+                try:
+                    active_sessions[-1].close()
+                except Exception:
+                    pass
             s_reg = requests.Session(proxies=proxies, impersonate="chrome110")
             s_reg.headers.update({"Connection": "close"})
             s_reg.timeout = 30
@@ -1223,7 +1229,27 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                 wait_time = random.randint(cfg.LOGIN_DELAY_MIN, cfg.LOGIN_DELAY_MAX)
                 print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）账号已通过，等待 {wait_time} 秒后同步最终状态...")
                 _record_token_wait_history(run_ctx, wait_seconds=wait_time)
-                if cfg.SAVE_TO_LOCAL_IN_CPA_MODE:
+                if cfg.ENABLE_CPA_MODE:
+                    should_retain = cfg.SAVE_TO_LOCAL_IN_CPA_MODE and cfg.CPA_RETAIN_REG_ONLY
+                    should_record_pending = cfg.SAVE_TO_LOCAL_IN_CPA_MODE
+                    mode_label = "CPA模式"
+                elif cfg.ENABLE_SUB2API_MODE:
+                    should_retain = cfg.SUB2API_SAVE_TO_LOCAL and cfg.SUB2API_RETAIN_REG_ONLY
+                    should_record_pending = should_retain
+                    mode_label = "Sub2API模式"
+                else:
+                    should_retain = cfg.RETAIN_REG_ONLY
+                    should_record_pending = should_retain
+                    mode_label = "常规模式"
+
+                if should_retain:
+                    try:
+                        from utils import db_manager
+                        db_manager.save_account_to_db(email, password, '{"status": "仅注册成功"}')
+                        print(f"[{cfg.ts()}] [INFO] [{mode_label}] （{mask_email(email)}）账号已注册成功，根据配置提前作为半成品写入本地库。")
+                    except Exception:
+                        pass
+                if should_record_pending:
                     _record_pending_account_registration(
                         email=email,
                         password=password,
@@ -1289,6 +1315,11 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                 for oauth_attempt in range(2):
                     if oauth_attempt == 1:
                         print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）首次遇到 add-phone 风控，正在重试...")
+                    if active_sessions:
+                        try:
+                            active_sessions[-1].close()
+                        except Exception:
+                            pass
                     s_log = requests.Session(proxies=proxies, impersonate="chrome110")
                     s_log.headers.update({"Connection": "close"})
                     s_log.timeout = 30
@@ -1799,7 +1830,8 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                 s.close()
             except:
                 pass
-        active_sessions.clear()
+        del active_sessions[:]
+        gc.collect()
 
 def refresh_oauth_token(refresh_token: str, proxies: Any = None) -> Tuple[bool, dict]:
     if not refresh_token:
