@@ -145,16 +145,18 @@ class LocalMicrosoftService:
         if getattr(cfg, "LOCAL_MS_ENABLE_FISSION", False):
             master_email = getattr(cfg, "LOCAL_MS_MASTER_EMAIL", "").strip()
             if master_email and "@" in master_email:
-                mailbox = self._build_strict_fission_mailbox(
-                    {
-                        "email": master_email,
-                        "client_id": getattr(cfg, "LOCAL_MS_CLIENT_ID", ""),
-                        "refresh_token": getattr(cfg, "LOCAL_MS_REFRESH_TOKEN", ""),
-                    },
-                    mailbox_id="manual_config",
-                )
-                if mailbox:
-                    return mailbox
+                for _ in range(20):
+                    mailbox = self._build_strict_fission_mailbox(
+                        {
+                            "email": master_email,
+                            "client_id": getattr(cfg, "LOCAL_MS_CLIENT_ID", ""),
+                            "refresh_token": getattr(cfg, "LOCAL_MS_REFRESH_TOKEN", ""),
+                        },
+                        mailbox_id="manual_config",
+                    )
+                    if mailbox and not db_manager.check_account_exists(mailbox["email"]):
+                        return mailbox
+                print(f"[{cfg.ts()}] [WARNING] 裂变生成别名多次重复，请前往配置调大[别名后缀长度]！")
                 return None
 
         if getattr(cfg, "LOCAL_MS_POOL_FISSION", False):
@@ -166,15 +168,20 @@ class LocalMicrosoftService:
                         break
 
                     mailbox = self._build_strict_fission_mailbox(mailbox_data, mailbox_id=mailbox_data.get("id"))
-                    if mailbox:
+                    if mailbox and not db_manager.check_account_exists(mailbox["email"]):
                         return mailbox
-
                     mailbox_email = str(mailbox_data.get("email") or "").strip().lower()
                     if mailbox_email:
                         excluded_emails.add(mailbox_email)
             return None
         mailbox = db_manager.get_and_lock_unused_local_mailbox()
         if mailbox:
+            target_email = mailbox["email"]
+            if db_manager.check_account_exists(target_email):
+                print(f"[{cfg.ts()}] [WARNING] 拦截：原始主号实际已存在账号库！已废弃。")
+                db_manager.update_local_mailbox_status(target_email, 3)
+                return None
+
             res = dict(mailbox)
             res["master_email"] = res["email"]
             res["is_raw_trial"] = True

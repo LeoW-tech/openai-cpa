@@ -5,9 +5,17 @@ import yaml
 import random
 import string
 import shutil
+import urllib.parse
 from datetime import datetime
 from typing import Optional
 from utils.proxy_manager import reload_proxy_config
+try:
+    from utils.integrations.sub2api_proxy import get_valid_sub2api_proxy_urls
+except Exception:
+    def get_valid_sub2api_proxy_urls(raw_value):
+        if isinstance(raw_value, list):
+            return [str(item).strip() for item in raw_value if str(item).strip()]
+        return [line.strip() for line in str(raw_value or "").splitlines() if line.strip()]
 
 CONFIG_FILE_LOCK = threading.Lock()
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +40,102 @@ def format_docker_url(url: str) -> str:
         url = url.replace("127.0.0.1", "host.docker.internal")
         url = url.replace("localhost", "host.docker.internal")
     return url
+
+
+def normalize_raw_proxy_entry(entry: str) -> str:
+    value = str(entry or "").strip()
+    if not value or value.startswith("#"):
+        return ""
+
+    if "://" in value:
+        parsed = urllib.parse.urlparse(value)
+        scheme = (parsed.scheme or "").lower()
+        if scheme == "socks5":
+            scheme = "socks5h"
+        if scheme not in {"http", "https", "socks5h"}:
+            return ""
+        if not parsed.hostname:
+            return ""
+
+        if parsed.username is not None:
+            auth = urllib.parse.quote(urllib.parse.unquote(parsed.username), safe="")
+            if parsed.password is not None:
+                auth += ":" + urllib.parse.quote(urllib.parse.unquote(parsed.password), safe="")
+            auth += "@"
+        else:
+            auth = ""
+
+        default_port = 1080 if scheme == "socks5h" else 8080
+        return format_docker_url(f"{scheme}://{auth}{parsed.hostname}:{parsed.port or default_port}")
+
+    if "@" in value:
+        return normalize_raw_proxy_entry(f"socks5h://{value}")
+
+    parts = value.split(":")
+    if len(parts) == 2:
+        host, port = parts
+        host = host.strip()
+        port = port.strip()
+        if host and port:
+            return format_docker_url(f"socks5h://{host}:{port}")
+        return ""
+
+    if len(parts) >= 4:
+        host = parts[0].strip()
+        port = parts[1].strip()
+        username = parts[2].strip()
+        password = ":".join(parts[3:]).strip()
+        if host and port and username:
+            auth = urllib.parse.quote(urllib.parse.unquote(username), safe="")
+            if password:
+                auth += ":" + urllib.parse.quote(urllib.parse.unquote(password), safe="")
+            return format_docker_url(f"socks5h://{auth}@{host}:{port}")
+    return ""
+
+
+def normalize_raw_proxy_list(entries) -> list:
+    normalized = []
+    seen = set()
+    for entry in entries or []:
+        proxy = normalize_raw_proxy_entry(entry)
+        if proxy and proxy not in seen:
+            normalized.append(proxy)
+            seen.add(proxy)
+    return normalized
+
+
+def is_raw_proxy_pool_enabled() -> bool:
+    return _raw_proxy_enable and bool(RAW_PROXY_LIST)
+
+
+def is_clash_proxy_pool_enabled() -> bool:
+    return (not is_raw_proxy_pool_enabled()) and _clash_enable and _clash_pool_mode and bool(WARP_PROXY_LIST)
+
+
+def is_queue_proxy_pool_enabled() -> bool:
+    return is_raw_proxy_pool_enabled() or is_clash_proxy_pool_enabled()
+
+
+def pooled_proxy_requires_clash_switch() -> bool:
+    return is_clash_proxy_pool_enabled()
+
+
+def is_shared_clash_switch_enabled() -> bool:
+    return (not is_queue_proxy_pool_enabled()) and _clash_enable and not _clash_pool_mode
+
+
+def should_return_pooled_proxy(borrowed_generation: int) -> bool:
+    return borrowed_generation == PROXY_QUEUE_GENERATION
+
+
+def make_proxy_queue_item(proxy: str, generation: Optional[int] = None):
+    return (PROXY_QUEUE_GENERATION if generation is None else generation, proxy)
+
+
+def unpack_proxy_queue_item(item):
+    if isinstance(item, tuple) and len(item) == 2:
+        return item
+    return PROXY_QUEUE_GENERATION, item
 
 
 def deep_update_config(default_dict, user_dict):
@@ -88,6 +192,7 @@ def init_config():
 
 _c: dict = {}
 WEB_PASSWORD: str = "admin"
+RETAIN_REG_ONLY: bool = False
 ENABLE_SUB_DOMAINS: bool = False
 SUB_DOMAIN_COUNT: int = 10
 EMAIL_API_MODE: str = ""
@@ -133,6 +238,9 @@ REMOVE_ON_LIMIT_REACHED: bool = False
 REMOVE_DEAD_ACCOUNTS: bool = False
 CPA_THREADS: int = 10
 CPA_AUTO_CHECK: bool = True
+CPA_RETAIN_REG_ONLY: bool = False
+
+
 CHECK_INTERVAL_MINUTES: int = 60
 ENABLE_TOKEN_REVIVE: bool = False
 SUB_DOMAIN_LEVEL: int = 1
@@ -157,6 +265,8 @@ SUB2API_ACCOUNT_RATE_MULTIPLIER: float = 1.0
 SUB2API_ACCOUNT_GROUP_IDS: list = []
 SUB2API_ENABLE_WS_MODE: bool = True
 SUB2API_DEFAULT_PROXY: str = ""
+SUB2API_DEFAULT_PROXY_POOL: list = []
+SUB2API_RETAIN_REG_ONLY: bool = False
 
 LUCKMAIL_PREFERRED_DOMAIN: str = ""
 LUCKMAIL_EMAIL_TYPE: str = ""
@@ -193,7 +303,10 @@ _clash_pool_mode: bool = False
 CLASH_CLUSTER_COUNT: int = 5
 CLASH_SUB_URL: str = ""
 WARP_PROXY_LIST: list = []
+_raw_proxy_enable: bool = False
+RAW_PROXY_LIST: list = []
 PROXY_QUEUE: queue.Queue = queue.Queue()
+PROXY_QUEUE_GENERATION: int = 0
 AI_API_BASE: str = ""
 AI_API_KEY: str = ""
 AI_MODEL: str = "gpt-3.5-turbo"
@@ -216,6 +329,45 @@ ANALYTICS_PUBLIC_IP_PROBE_TIMEOUT_SEC: int = 8
 ANALYTICS_GEO_LOOKUP_TIMEOUT_SEC: int = 8
 ANALYTICS_EXPORT_MAX_ROWS: int = 5000
 ANALYTICS_SNAPSHOT_MAX_BYTES: int = 4096
+_sub2api_proxy_rotation_lock = threading.Lock()
+_sub2api_proxy_rotation_index = 0
+
+GMAIL_OAUTH_MASTER_EMAIL: str = ""
+GMAIL_OAUTH_FISSION_ENABLE: bool = False
+GMAIL_OAUTH_FISSION_MODE: str = "suffix"
+GMAIL_OAUTH_SUFFIX_MODE: str = "fixed"
+GMAIL_OAUTH_SUFFIX_LEN_MIN: int = 8
+GMAIL_OAUTH_SUFFIX_LEN_MAX: int = 8
+
+
+
+def reset_sub2api_proxy_rotation():
+    global _sub2api_proxy_rotation_index
+    with _sub2api_proxy_rotation_lock:
+        _sub2api_proxy_rotation_index = 0
+
+
+def _resolve_sub2api_proxy_pool(raw_value=None):
+    if raw_value is None:
+        if SUB2API_DEFAULT_PROXY_POOL:
+            return list(SUB2API_DEFAULT_PROXY_POOL)
+        raw_items = get_valid_sub2api_proxy_urls(SUB2API_DEFAULT_PROXY)
+    else:
+        raw_items = get_valid_sub2api_proxy_urls(raw_value)
+    return [format_docker_url(item) for item in raw_items if item]
+
+
+def get_next_sub2api_proxy_url(raw_value=None) -> str:
+    global _sub2api_proxy_rotation_index
+
+    proxy_pool = _resolve_sub2api_proxy_pool(raw_value)
+    if not proxy_pool:
+        return ""
+
+    with _sub2api_proxy_rotation_lock:
+        current_index = _sub2api_proxy_rotation_index % len(proxy_pool)
+        _sub2api_proxy_rotation_index = (_sub2api_proxy_rotation_index + 1) % len(proxy_pool)
+    return proxy_pool[current_index]
 
 def reload_all_configs(new_config_dict=None):
     global _c
@@ -236,13 +388,15 @@ def reload_all_configs(new_config_dict=None):
     global MIN_REMAINING_WEEKLY_PERCENT, REMOVE_ON_LIMIT_REACHED, REMOVE_DEAD_ACCOUNTS
     global CPA_THREADS, CHECK_INTERVAL_MINUTES, ENABLE_TOKEN_REVIVE
     global NORMAL_SLEEP_MIN, NORMAL_SLEEP_MAX, NORMAL_TARGET_COUNT
-    global _clash_enable, _clash_pool_mode, WARP_PROXY_LIST, PROXY_QUEUE
+    global _clash_enable, _clash_pool_mode, WARP_PROXY_LIST, PROXY_QUEUE, PROXY_QUEUE_GENERATION
+    global _raw_proxy_enable, RAW_PROXY_LIST
     global CLASH_CLUSTER_COUNT, CLASH_SUB_URL
     global ENABLE_SUB2API_MODE, SUB2API_URL, SUB2API_KEY
     global SUB2API_MIN_THRESHOLD, SUB2API_BATCH_COUNT, SUB2API_CHECK_INTERVAL, SUB2API_THREADS, SUB2API_TEST_MODEL
     global SUB2API_SAVE_TO_LOCAL
     global SUB2API_REMOVE_ON_LIMIT_REACHED, SUB2API_REMOVE_DEAD_ACCOUNTS, SUB2API_ENABLE_TOKEN_REVIVE
     global SUB2API_ACCOUNT_CONCURRENCY, SUB2API_ACCOUNT_LOAD_FACTOR, SUB2API_ACCOUNT_PRIORITY, SUB2API_DEFAULT_PROXY
+    global SUB2API_DEFAULT_PROXY_POOL
     global SUB2API_ACCOUNT_RATE_MULTIPLIER, SUB2API_ACCOUNT_GROUP_IDS, SUB2API_ENABLE_WS_MODE
     global LUCKMAIL_API_KEY, LUCKMAIL_PREFERRED_DOMAIN, LUCKMAIL_EMAIL_TYPE, LUCKMAIL_VARIANT_MODE, LUCKMAIL_REUSE_PURCHASED, LUCKMAIL_TAG_ID
     global HERO_SMS_ENABLED, HERO_SMS_API_KEY, HERO_SMS_BASE_URL, HERO_SMS_COUNTRY, HERO_SMS_SERVICE
@@ -266,6 +420,9 @@ def reload_all_configs(new_config_dict=None):
     global ANALYTICS_ENABLED, ANALYTICS_CAPTURE_EVENTS, ANALYTICS_CAPTURE_IP_GEO
     global ANALYTICS_GEO_CACHE_TTL_HOURS, ANALYTICS_PUBLIC_IP_PROBE_TIMEOUT_SEC
     global ANALYTICS_GEO_LOOKUP_TIMEOUT_SEC, ANALYTICS_EXPORT_MAX_ROWS, ANALYTICS_SNAPSHOT_MAX_BYTES
+    global CPA_RETAIN_REG_ONLY, SUB2API_RETAIN_REG_ONLY, RETAIN_REG_ONLY
+    global GMAIL_OAUTH_MASTER_EMAIL, GMAIL_OAUTH_FISSION_ENABLE, GMAIL_OAUTH_FISSION_MODE
+    global GMAIL_OAUTH_SUFFIX_MODE, GMAIL_OAUTH_SUFFIX_LEN_MIN, GMAIL_OAUTH_SUFFIX_LEN_MAX
 
     base_yaml_config = init_config()
 
@@ -371,6 +528,7 @@ def reload_all_configs(new_config_dict=None):
         return group_ids
 
     WEB_PASSWORD = str(_c.get("web_password", "admin")).strip()
+    RETAIN_REG_ONLY = safe_bool(_c.get("retain_reg_only", False))
 
     EMAIL_API_MODE = _c.get("email_api_mode", "cloudflare_temp_email")
     MAIL_DOMAINS = _c.get("mail_domains", "")
@@ -443,6 +601,7 @@ def reload_all_configs(new_config_dict=None):
     CHECK_INTERVAL_MINUTES = _cpa.get("check_interval_minutes", 60)
     ENABLE_TOKEN_REVIVE = _cpa.get("enable_token_revive", False)
     CPA_AUTO_CHECK = _cpa.get("auto_check", True)
+    CPA_RETAIN_REG_ONLY = safe_bool(_cpa.get("retain_reg_only", False))
 
     _sub2api = _c.get("sub2api_mode", {})
     ENABLE_SUB2API_MODE = _sub2api.get("enable", False)
@@ -464,7 +623,19 @@ def reload_all_configs(new_config_dict=None):
     SUB2API_ACCOUNT_RATE_MULTIPLIER = safe_float(_sub2api.get("account_rate_multiplier", 1.0), 1.0, minimum=0.0)
     SUB2API_ACCOUNT_GROUP_IDS = parse_group_ids(_sub2api.get("account_group_ids", ""))
     SUB2API_ENABLE_WS_MODE = safe_bool(_sub2api.get("enable_ws_mode", True), default=True)
-    SUB2API_DEFAULT_PROXY = _sub2api.get("default_proxy", "")
+    SUB2API_RETAIN_REG_ONLY = safe_bool(_sub2api.get("retain_reg_only", False))
+
+    raw_sub2api_default_proxy = _sub2api.get("default_proxy", "")
+
+    if isinstance(raw_sub2api_default_proxy, list):
+        SUB2API_DEFAULT_PROXY = "\n".join(str(item).strip() for item in raw_sub2api_default_proxy if str(item).strip())
+    else:
+        SUB2API_DEFAULT_PROXY = str(raw_sub2api_default_proxy or "")
+    SUB2API_DEFAULT_PROXY_POOL = [
+        format_docker_url(item)
+        for item in get_valid_sub2api_proxy_urls(raw_sub2api_default_proxy)
+    ]
+    reset_sub2api_proxy_rotation()
     _normal = _c.get("normal_mode", {})
     NORMAL_SLEEP_MIN = _normal.get("sleep_min", 5)
     NORMAL_SLEEP_MAX = _normal.get("sleep_max", 30)
@@ -476,12 +647,24 @@ def reload_all_configs(new_config_dict=None):
     CLASH_CLUSTER_COUNT = int(_clash_conf.get("cluster_count") or 5)
     CLASH_SUB_URL = str(_clash_conf.get("sub_url") or "").strip()
     WARP_PROXY_LIST = _c.get("warp_proxy_list", [])
+    _raw_proxy_conf = _c.get("raw_proxy_pool", {})
+    _raw_proxy_enable = safe_bool(_raw_proxy_conf.get("enable", False), default=False)
+    RAW_PROXY_LIST = normalize_raw_proxy_list(_raw_proxy_conf.get("proxy_list", []))
+    if is_raw_proxy_pool_enabled():
+        _clash_enable = False
+        _clash_pool_mode = False
 
     with PROXY_QUEUE.mutex:
         PROXY_QUEUE.queue.clear()
-    if _clash_enable and _clash_pool_mode and WARP_PROXY_LIST:
+        PROXY_QUEUE.unfinished_tasks = 0
+        PROXY_QUEUE.all_tasks_done.notify_all()
+        PROXY_QUEUE_GENERATION += 1
+    if is_raw_proxy_pool_enabled():
+        for p in RAW_PROXY_LIST:
+            PROXY_QUEUE.put(make_proxy_queue_item(p))
+    elif is_clash_proxy_pool_enabled():
         for p in WARP_PROXY_LIST:
-            PROXY_QUEUE.put(p)
+            PROXY_QUEUE.put(make_proxy_queue_item(p))
     else:
         PROXY_QUEUE.put(DEFAULT_PROXY if DEFAULT_PROXY else None)
 
@@ -579,6 +762,15 @@ def reload_all_configs(new_config_dict=None):
     FVIA_TOKEN = str(_fvia.get("token") or "").strip()
 
     MAX_LOG_LINES = safe_int(_c.get("max_log_lines", 500), 500, minimum=50)
+
+    _gmail = _c.get("gmail_oauth_mode", {})
+    GMAIL_OAUTH_MASTER_EMAIL = str(_gmail.get("master_email", "")).strip()
+    GMAIL_OAUTH_FISSION_ENABLE = safe_bool(_gmail.get("fission_enable", False))
+    GMAIL_OAUTH_FISSION_MODE = str(_gmail.get("fission_mode", "suffix")).strip().lower()
+
+    GMAIL_OAUTH_SUFFIX_MODE = str(_gmail.get("suffix_mode", "fixed")).strip().lower()
+    GMAIL_OAUTH_SUFFIX_LEN_MIN = int(_gmail.get("suffix_len_min", 8))
+    GMAIL_OAUTH_SUFFIX_LEN_MAX = int(_gmail.get("suffix_len_max", 8))
 
 
     reload_proxy_config()

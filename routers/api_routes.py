@@ -10,6 +10,7 @@ import sys
 import subprocess
 import yaml
 import urllib.parse
+from datetime import datetime, timezone
 import httpx
 import copy
 from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket, HTTPException
@@ -21,7 +22,7 @@ from utils import core_engine, db_manager
 from utils import registration_history
 from utils.config import reload_all_configs
 try:
-    from utils.integrations.sub2api_client import Sub2APIClient, build_default_model_mapping as _build_default_sub2api_model_mapping
+    from utils.integrations.sub2api_client import Sub2APIClient, build_sub2api_export_bundle, get_sub2api_push_settings
 except ImportError:
     from utils.integrations.sub2api_client import Sub2APIClient
 
@@ -41,10 +42,53 @@ except ImportError:
             "gpt-5.3-codex": "gpt-5.3-codex",
             "gpt-5.4": "gpt-5.4",
         }
+
+    def get_sub2api_push_settings():
+        return {
+            "concurrency": int(getattr(cfg, "SUB2API_ACCOUNT_CONCURRENCY", 10) or 10),
+            "load_factor": int(getattr(cfg, "SUB2API_ACCOUNT_LOAD_FACTOR", 10) or 10),
+            "priority": int(getattr(cfg, "SUB2API_ACCOUNT_PRIORITY", 1) or 1),
+            "rate_multiplier": float(getattr(cfg, "SUB2API_ACCOUNT_RATE_MULTIPLIER", 1.0) or 1.0),
+        }
+
+    def build_sub2api_export_bundle(token_items, settings=None, *, rotate_missing_proxy=False):
+        push_settings = settings or get_sub2api_push_settings()
+        proxy_obj = parse_sub2api_proxy(getattr(cfg, "SUB2API_DEFAULT_PROXY", ""))
+        accounts = []
+        for token_data in token_items:
+            account_item = {
+                "name": str(token_data.get("email", "unknown"))[:64],
+                "platform": "openai",
+                "type": "oauth",
+                "credentials": {
+                    "refresh_token": token_data.get("refresh_token", ""),
+                    "model_mapping": _build_default_sub2api_model_mapping(),
+                },
+                "concurrency": int(push_settings.get("concurrency", 10)),
+                "priority": int(push_settings.get("priority", 1)),
+                "rate_multiplier": float(push_settings.get("rate_multiplier", 1.0)),
+                "extra": {"load_factor": int(push_settings.get("load_factor", 10))},
+            }
+            proxy_name = str(token_data.get("sub2api_proxy_name", "") or "").strip()
+            if proxy_name:
+                account_item["proxy_name"] = proxy_name
+            if proxy_obj and proxy_obj.get("proxy_key"):
+                account_item["proxy_key"] = proxy_obj["proxy_key"]
+            accounts.append(account_item)
+        return {
+            "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "proxies": [proxy_obj] if proxy_obj else [],
+            "accounts": accounts,
+        }
 from utils.integrations.tg_notifier import send_tg_msg_async
 from utils.email_providers.gmail_oauth_handler import GmailOAuthHandler
 from curl_cffi import requests as cffi_requests
 from global_state import VALID_TOKENS, CLUSTER_NODES, NODE_COMMANDS, cluster_lock, log_history, engine, verify_token, worker_status
+try:
+    from global_state import append_log
+except ImportError:
+    def append_log(*args, **kwargs):
+        return None
 import utils.config as cfg
 try:
     import utils.integrations.clash_manager as clash_manager
@@ -745,8 +789,8 @@ def get_cf_global_status(main_domain: str, token: str = Depends(verify_token)):
         return {"status": "error", "message": f"状态同步失败: {str(e)}"}
 
 @router.get("/api/accounts")
-async def get_accounts(page: int = Query(1), page_size: int = Query(50), token: str = Depends(verify_token)):
-    result = db_manager.get_accounts_page(page, page_size)
+async def get_accounts(page: int = Query(1), page_size: int = Query(50), hide_reg: str = Query("0"), token: str = Depends(verify_token)):
+    result = db_manager.get_accounts_page(page, page_size, hide_reg=hide_reg)
     return {"status": "success", "data": result["data"], "total": result["total"], "page": page, "page_size": page_size}
 
 
@@ -784,9 +828,6 @@ def account_action(data: dict, token: str = Depends(verify_token)):
         elif action == "push_sub2api":
             if not getattr(core_engine.cfg, 'ENABLE_SUB2API_MODE', False): return {"status": "error",
                                                                                    "message": "🚫 推送失败：未开启 Sub2API 模式！"}
-            proxy_obj = parse_sub2api_proxy(cfg.SUB2API_DEFAULT_PROXY)
-            if proxy_obj:
-                token_data["sub2api_proxy"] = proxy_obj
             client = Sub2APIClient(api_url=getattr(core_engine.cfg, 'SUB2API_URL', ''),
                                    api_key=getattr(core_engine.cfg, 'SUB2API_KEY', ''))
             success, resp = client.add_account(token_data)
@@ -803,31 +844,8 @@ async def export_sub2api_accounts(req: ExportReq, token: str = Depends(verify_to
         tokens = db_manager.get_tokens_by_emails(req.emails)
         if not tokens: return {"status": "error", "message": "未提取到Token"}
 
-        sub2api_settings = getattr(core_engine.cfg, '_c', {}).get("sub2api_mode", {})
-        proxy_obj = parse_sub2api_proxy(cfg.SUB2API_DEFAULT_PROXY)
-        accounts_list = []
-        for td in tokens:
-            acc = {
-                "name": str(td.get("email", "unknown"))[:64],
-                "platform": "openai", "type": "oauth",
-                "credentials": {
-                    "refresh_token": td.get("refresh_token", ""),
-                    "model_mapping": _build_default_sub2api_model_mapping(),
-                },
-                "concurrency": int(sub2api_settings.get("account_concurrency", 10)),
-                "priority": int(sub2api_settings.get("account_priority", 1)),
-                "rate_multiplier": float(sub2api_settings.get("account_rate_multiplier", 1.0)),
-                "extra": {"load_factor": int(sub2api_settings.get("account_load_factor", 10))}
-            }
-            proxy_name = str(td.get("sub2api_proxy_name", "") or "").strip()
-            if proxy_name:
-                acc["proxy_name"] = proxy_name
-            if proxy_obj:
-                acc["proxy_key"] = proxy_obj["proxy_key"]
-            accounts_list.append(acc)
-        return {"status": "success",
-                "data": {"exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "proxies": [proxy_obj] if proxy_obj else [],
-                         "accounts": accounts_list}}
+        bundle = build_sub2api_export_bundle(tokens, get_sub2api_push_settings(), rotate_missing_proxy=True)
+        return {"status": "success", "data": bundle}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -1206,7 +1224,7 @@ def cluster_upload_accounts(req: ClusterUploadAccountsReq):
     msg = f"[{core_engine.ts()}] [系统] 📦 成功从子控 [{req.node_name}] 提取并完美入库 {success_count} 个账号！"
     print(msg)
     try:
-        log_history.append(msg)
+        append_log(msg)
     except:
         pass
     return {"status": "success", "message": f"成功接收 {success_count} 个账号"}
