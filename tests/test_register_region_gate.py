@@ -3,6 +3,7 @@ import io
 import sys
 import types
 import unittest
+import builtins
 from contextlib import ExitStack, redirect_stdout
 from unittest.mock import patch
 
@@ -33,6 +34,8 @@ class RegisterRegionGateTests(unittest.TestCase):
             post=None,
             Session=_FakeSession,
         )
+        if hasattr(builtins, "_openai_cpa_real_print"):
+            builtins.print = builtins._openai_cpa_real_print
         self._module_stack = ExitStack()
         self._module_stack.enter_context(
             patch.dict(
