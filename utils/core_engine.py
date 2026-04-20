@@ -1138,8 +1138,9 @@ def normal_main_loop(args, stop_event: threading.Event, executor=None):
                                 cfg.PROXY_QUEUE.task_done()
                     if cfg._clash_enable and cfg._clash_pool_mode:
                         p = cfg.PROXY_QUEUE.get()
+                        proxy_url = p[-1] if isinstance(p, tuple) else p
                         try:
-                            return run_and_refresh(p, args, False, skip_switch=False)
+                            return run_and_refresh(proxy_url, args, False, skip_switch=False)
                         finally:
                             cfg.PROXY_QUEUE.put(p)
                             cfg.PROXY_QUEUE.task_done()
@@ -1167,8 +1168,9 @@ def normal_main_loop(args, stop_event: threading.Event, executor=None):
                             cfg.PROXY_QUEUE.task_done()
                 elif cfg._clash_enable and cfg._clash_pool_mode:
                     p = cfg.PROXY_QUEUE.get()
+                    proxy_url = p[-1] if isinstance(p, tuple) else p
                     try:
-                        status = run_and_refresh(p, args, False, skip_switch=False)
+                        status = run_and_refresh(proxy_url, args, False, skip_switch=False)
                     finally:
                         cfg.PROXY_QUEUE.put(p)
                         cfg.PROXY_QUEUE.task_done()
@@ -1330,8 +1332,9 @@ async def cpa_main_loop(args, async_stop_event: asyncio.Event, executor=None):
                                 cfg.PROXY_QUEUE.task_done()
                     if cfg._clash_enable and cfg._clash_pool_mode:
                         p = cfg.PROXY_QUEUE.get()
+                        proxy_url = p[-1] if isinstance(p, tuple) else p
                         try:
-                            return run_and_refresh(p, args, cpa_upload=True, skip_switch=False)
+                            return run_and_refresh(proxy_url, args, cpa_upload=True, skip_switch=False)
                         finally:
                             cfg.PROXY_QUEUE.put(p)
                             cfg.PROXY_QUEUE.task_done()
@@ -1380,8 +1383,9 @@ async def cpa_main_loop(args, async_stop_event: asyncio.Event, executor=None):
                                     cfg.PROXY_QUEUE.task_done()
                         elif cfg._clash_enable and cfg._clash_pool_mode:
                             p = cfg.PROXY_QUEUE.get()
+                            proxy_url = p[-1] if isinstance(p, tuple) else p
                             try:
-                                status = await loop.run_in_executor(None, run_and_refresh, p, args, True, False)
+                                status = await loop.run_in_executor(None, run_and_refresh, proxy_url, args, True, False)
                             finally:
                                 cfg.PROXY_QUEUE.put(p)
                                 cfg.PROXY_QUEUE.task_done()
@@ -1528,8 +1532,9 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event, executor=None
                                 cfg.PROXY_QUEUE.task_done()
                     if cfg._clash_enable and cfg._clash_pool_mode:
                         p = cfg.PROXY_QUEUE.get()
+                        proxy_url = p[-1] if isinstance(p, tuple) else p
                         try:
-                            return _sub2api_run_wrapper(p, False)
+                            return _sub2api_run_wrapper(proxy_url, False)
                         finally:
                             cfg.PROXY_QUEUE.put(p)
                             cfg.PROXY_QUEUE.task_done()
@@ -1581,8 +1586,9 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event, executor=None
                                     cfg.PROXY_QUEUE.task_done()
                         elif cfg._clash_enable and cfg._clash_pool_mode:
                             p = cfg.PROXY_QUEUE.get()
+                            proxy_url = p[-1] if isinstance(p, tuple) else p
                             try:
-                                status = await loop.run_in_executor(None, _sub2api_run_wrapper, p, False)
+                                status = await loop.run_in_executor(None, _sub2api_run_wrapper, proxy_url, False)
                             finally:
                                 cfg.PROXY_QUEUE.put(p)
                                 cfg.PROXY_QUEUE.task_done()
