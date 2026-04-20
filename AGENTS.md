@@ -1,31 +1,43 @@
 # openai-cpa 本地使用说明
 
-这份文档写给在本项目根目录直接操作的人用。
+这份文档写给在本项目相关目录直接操作的人用。
 
-详细的一键复制命令已经整理到根目录的 [常用命令.md](常用命令.md)，默认你使用的是 macOS / zsh，并且项目目录固定为：
+详细的一键复制命令已经整理到根目录的 [常用命令.md](常用命令.md)。当前这个项目同时存在 `mac` 本地环境和 `Linux` 正式环境，两端都在运行，所有操作前都必须先确认自己要操作的是哪一端，避免把一端的命令误打到另一端。
 
-```bash
-/Users/meilinwang/Projects/openai-cpa-Public
-```
+## 双端运行声明
+
+当前存在两套并行运行环境：
+
+| 项目 | mac 本地环境 | Linux 正式环境 |
+| --- | --- | --- |
+| 部署根目录 | `/Users/meilinwang/Projects/openai-cpa-Public` | `/srv/openai-cpa` |
+| 仓库目录 | `/Users/meilinwang/Projects/openai-cpa-Public` | `/srv/openai-cpa/repo` |
+| 数据目录 | `/Users/meilinwang/Projects/openai-cpa-Public/data` | `/srv/openai-cpa/data` |
+| 配置文件 | `/Users/meilinwang/Projects/openai-cpa-Public/data/config.yaml` | `/srv/openai-cpa/data/config.yaml` |
+| 容器名 | `openai-cpa-local` | `openai-cpa` |
+| 主要运行入口 | 本地项目目录 + 本地容器脚本 | `/srv/openai-cpa/docker-compose.linux.yml` |
+
+重要约定：
+
+- `mac` 侧以本地项目目录和 `openai-cpa-local` 相关命令为主。
+- `Linux` 侧以 `/srv/openai-cpa/docker-compose.linux.yml` 和容器 `openai-cpa` 为主。
+- 排障、改配置、重启服务、重建部署前，先确认目标数据目录和目标容器名。
+- 不要把 `mac` 的 `data/config.yaml` 和 `Linux` 的 `/srv/openai-cpa/data/config.yaml` 混用。
 
 ## 访问地址和密码
 
-Web 控制台地址：
+Web 控制台地址对照：
 
-```text
-http://127.0.0.1:8000
-```
+| 环境 | 地址 |
+| --- | --- |
+| mac 本机访问 | `http://127.0.0.1:8000` |
+| Linux 本机访问 | `http://127.0.0.1:8000` |
+| Linux 局域网访问 | `http://192.168.31.214:8000` |
 
 默认登录密码：
 
 ```text
 admin
-```
-
-本地配置文件：
-
-```text
-/Users/meilinwang/Projects/openai-cpa-Public/data/config.yaml
 ```
 
 ## 当前 Git / 分支开发规范
@@ -34,7 +46,7 @@ admin
 
 - `upstream`：官方仓库 `https://github.com/wenfxl/openai-cpa.git`
 - `origin`：你自己的 fork `https://github.com/LeoW-tech/openai-cpa.git`
-- `main`：当前正式使用中的本地主开发分支，也是本地 Docker 镜像默认应基于的代码
+- `main`：当前正式使用中的本地主开发分支
 - `upstream-main`：专门镜像官方 `upstream/main` 的观察分支，只用于对齐和观察官方开发进度
 
 日常开发建议：
@@ -45,33 +57,61 @@ admin
 - `origin/main` 与本地 `main` 保持一致，作为你 fork 上的正式主线
 - `origin/upstream-main` 与本地 `upstream-main` 保持一致，作为官方观察线
 
-## 数据和配置位置
+两端 Git 约定相同，但执行目录不同：
 
-运行时数据目录：
+- `mac` 版 Git 命令默认在 `/Users/meilinwang/Projects/openai-cpa-Public`
+- `Linux` 版 Git 命令默认在 `/srv/openai-cpa/repo`
 
-```text
-/Users/meilinwang/Projects/openai-cpa-Public/data
-```
+## 运行态与配置位置对照
 
-常见内容：
+### mac 本地环境
 
-- `data/config.yaml`：主配置文件
-- `data/data.db`：本地 SQLite 数据库
-- `data/logs/app.log`：源码方式运行时的本地日志
+- 仓库目录：`/Users/meilinwang/Projects/openai-cpa-Public`
+- 数据目录：`/Users/meilinwang/Projects/openai-cpa-Public/data`
+- 主配置文件：`/Users/meilinwang/Projects/openai-cpa-Public/data/config.yaml`
+- 本地 SQLite：`/Users/meilinwang/Projects/openai-cpa-Public/data/data.db`
+- 源码方式日志：`/Users/meilinwang/Projects/openai-cpa-Public/data/logs/app.log`
+
+### Linux 正式环境
+
+- 部署根目录：`/srv/openai-cpa`
+- 仓库目录：`/srv/openai-cpa/repo`
+- 数据目录：`/srv/openai-cpa/data`
+- 主配置文件：`/srv/openai-cpa/data/config.yaml`
+- 本地 SQLite：`/srv/openai-cpa/data/data.db`
+- compose 文件：`/srv/openai-cpa/docker-compose.linux.yml`
+
+## 容器名与运行入口对照
+
+### mac 本地环境
+
+- 容器名：`openai-cpa-local`
+- 推荐重启入口：`./scripts/restart_local_container.sh`
+- 推荐重建入口：`./scripts/rebuild_local_container.sh`
+
+### Linux 正式环境
+
+- 容器名：`openai-cpa`
+- 推荐重启入口：`docker compose -f /srv/openai-cpa/docker-compose.linux.yml restart openai-cpa`
+- 推荐重建入口：`docker compose -f /srv/openai-cpa/docker-compose.linux.yml up -d --build`
 
 ## 常用命令文档
 
 文档里的所有常用命令已经独立迁移到根目录的 [常用命令.md](常用命令.md)。
 
-新文档中的命令已经统一修订为“带项目运行目录、整行可复制执行”的单行命令，直接复制到终端即可使用。
+新文档里的命令统一遵守以下规则：
+
+- 看到 `Linux 版` 只在 Linux 上执行
+- 看到 `mac 版` 只在 mac 上执行
+- 没标环境且命令完全一致时，表示两端通用
+- 所有命令都保持“带真实路径、整行可复制执行”的风格
 
 ## 当前默认约定
 
-- Web 地址固定用 `http://127.0.0.1:8000`
-- 默认密码先用 `admin`
-- 主要维护方式优先使用本地 Docker 容器 `openai-cpa-local`
-- 配置文件统一改 `data/config.yaml`
+- 当前是双端并列运行，不设单一默认主端
+- `mac` 环境优先按本地项目目录和 `openai-cpa-local` 相关脚本维护
+- `Linux` 环境优先按 `/srv/openai-cpa` 和 `docker-compose.linux.yml` 维护
+- 配置文件统一在各自真实数据目录中修改
 - 当前默认开发分支是 `main`
 - 官方更新一律从 `upstream/main` 拉，本地观察分支统一使用 `upstream-main`
 - 日常推送优先推到你自己的 fork，也就是 `origin`
-- 所有命令都默认从项目根目录执行
