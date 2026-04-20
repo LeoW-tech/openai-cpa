@@ -462,6 +462,7 @@ def aggregate_records(
     key_fields: list[str],
     value_fields: Optional[dict[str, str]] = None,
     unknown_policy: str,
+    sort_mode: str = "count_desc",
 ) -> list[dict[str, Any]]:
     grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
     total_records = len(records)
@@ -509,8 +510,6 @@ def aggregate_records(
                 item[field_name] += safe_int(row.get(source_key))
 
     rows = list(grouped.values())
-    rows.sort(key=lambda item: (-safe_int(item.get("total_count")),) + tuple(str(item.get(field) or "") for field in key_fields))
-    running_total = 0
     for row in rows:
         row["closed_success_rate"] = compute_closed_success_rate(
             total_count=safe_int(row.get("total_count")),
@@ -522,6 +521,19 @@ def aggregate_records(
             total_count=safe_int(row.get("total_count")),
             unknown_count=safe_int(row.get("unknown_count")),
         )
+    if sort_mode == "success_rate_desc":
+        rows.sort(
+            key=lambda item: (
+                -float(item.get("closed_success_rate", 0.0)),
+                -safe_int(item.get("success_count")),
+                -safe_int(item.get("total_count")),
+            ) + tuple(str(item.get(field) or "") for field in key_fields)
+        )
+    else:
+        rows.sort(key=lambda item: (-safe_int(item.get("total_count")),) + tuple(str(item.get(field) or "") for field in key_fields))
+
+    running_total = 0
+    for row in rows:
         running_total += safe_int(row.get("total_count"))
         row["cumulative_share"] = float(running_total) / float(total_records) if total_records > 0 else 0.0
     return rows
@@ -776,9 +788,15 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def markdown_segment_rows(rows: list[dict[str, Any]], *, label_key: str, top_n: int = 10) -> list[dict[str, Any]]:
+def markdown_segment_rows(
+    rows: list[dict[str, Any]],
+    *,
+    label_key: str,
+    top_n: Optional[int] = 10,
+) -> list[dict[str, Any]]:
     table_rows = []
-    for row in rows[:top_n]:
+    selected_rows = rows if top_n is None else rows[:top_n]
+    for row in selected_rows:
         table_rows.append(
             {
                 label_key: row.get(label_key, ""),
@@ -982,10 +1000,10 @@ def build_report(
             ],
         ),
         "",
-        "### Exit IP Top 10",
+        "### Exit IP 全量列表（按 Closed 成功率降序）",
         "",
         to_markdown_table(
-            markdown_segment_rows(by_exit_ip, label_key="exit_ip"),
+            markdown_segment_rows(by_exit_ip, label_key="exit_ip", top_n=None),
             [
                 ("exit_ip", "Exit IP"),
                 ("样本", "样本"),
@@ -1157,6 +1175,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         enriched,
         key_fields=["exit_ip"],
         unknown_policy=config.unknown_policy,
+        sort_mode="success_rate_desc",
     )
     by_country = aggregate_records(
         enriched,
