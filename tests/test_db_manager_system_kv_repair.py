@@ -1,5 +1,6 @@
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 
 class SystemKvRepairScriptTests(unittest.TestCase):
     def test_repair_rebuilds_clean_system_kv_and_preserves_main_tables(self):
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "repair_system_kv_db.py"
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             source_db = base / "data.db"
@@ -55,8 +57,8 @@ class SystemKvRepairScriptTests(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    "python",
-                    "/Users/meilinwang/Projects/openai-cpa-Public/scripts/repair_system_kv_db.py",
+                    sys.executable,
+                    str(script_path),
                     "--source-db",
                     str(source_db),
                     "--output-db",

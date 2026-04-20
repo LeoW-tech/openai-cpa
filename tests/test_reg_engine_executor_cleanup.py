@@ -4,17 +4,7 @@ import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-# Stub heavy third-party and project dependencies so we can import
-# RegEngine without installing the full runtime stack.
 _stubs = {
-    "yaml": types.SimpleNamespace(
-        safe_load=lambda *a, **kw: {},
-        safe_dump=lambda *a, **kw: "",
-    ),
-    "curl_cffi": types.SimpleNamespace(
-        requests=types.SimpleNamespace(),
-        CurlMime=object,
-    ),
     "utils.email_providers.mail_service": types.SimpleNamespace(
         mask_email=lambda value: value,
     ),
@@ -23,21 +13,20 @@ _stubs = {
         refresh_oauth_token=lambda *args, **kwargs: (False, {}),
     ),
     "utils.proxy_manager": types.SimpleNamespace(
+        get_last_success_node_name=lambda *args, **kwargs: "",
         smart_switch_node=lambda *args, **kwargs: True,
         reload_proxy_config=lambda *args, **kwargs: None,
     ),
     "utils.integrations.sub2api_client": types.SimpleNamespace(
-        Sub2APIClient=object,
+        Sub2APIClient=lambda *args, **kwargs: Mock(),
     ),
     "utils.integrations.tg_notifier": types.SimpleNamespace(
         send_tg_msg_sync=lambda *args, **kwargs: None,
     ),
 }
-for mod_name, stub in _stubs.items():
-    if mod_name not in sys.modules:
-        sys.modules[mod_name] = stub
 
-from utils.core_engine import RegEngine
+with patch.dict(sys.modules, _stubs, clear=False):
+    from utils.core_engine import RegEngine
 
 
 class RegEngineExecutorCleanupTests(unittest.TestCase):
@@ -45,9 +34,12 @@ class RegEngineExecutorCleanupTests(unittest.TestCase):
         engine = RegEngine()
         executor = Mock()
         engine._executor = executor
-        args = SimpleNamespace()
+        args = SimpleNamespace(once=False, proxy=None)
 
-        with patch("utils.core_engine.normal_main_loop", side_effect=lambda *a, **kw: None):
+        def _fake_run_in_thread(_args):
+            engine._finalize_thread_run()
+
+        with patch.object(engine, "_run_normal_in_thread", side_effect=_fake_run_in_thread):
             engine.start_normal(args)
             engine.current_thread.join(timeout=2)
 
@@ -67,13 +59,21 @@ class RegEngineExecutorCleanupTests(unittest.TestCase):
                 engine = RegEngine()
                 executor = Mock()
                 engine._executor = executor
-                args = SimpleNamespace()
+                args = SimpleNamespace(once=False, proxy=None)
+                fake_loop = Mock()
+                fake_loop.run_until_complete.side_effect = (
+                    lambda coro: coro.close() if hasattr(coro, "close") else None
+                )
 
                 if target_name.startswith("_"):
                     setattr(engine, target_name, AsyncMock(return_value=None))
-                    getattr(engine, runner_name)(args)
+                    with patch("utils.core_engine.asyncio.new_event_loop", return_value=fake_loop), \
+                         patch("utils.core_engine.asyncio.set_event_loop"):
+                        getattr(engine, runner_name)(args)
                 else:
-                    with patch(f"utils.core_engine.{target_name}", new=AsyncMock(return_value=None)):
+                    with patch(f"utils.core_engine.{target_name}", new=AsyncMock(return_value=None)), \
+                         patch("utils.core_engine.asyncio.new_event_loop", return_value=fake_loop), \
+                         patch("utils.core_engine.asyncio.set_event_loop"):
                         getattr(engine, runner_name)(args)
 
                 executor.shutdown.assert_called_once_with(wait=False)

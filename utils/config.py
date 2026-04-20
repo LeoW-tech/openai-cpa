@@ -6,7 +6,7 @@ import random
 import string
 import shutil
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from utils.proxy_manager import reload_proxy_config
 try:
@@ -21,16 +21,23 @@ CONFIG_FILE_LOCK = threading.Lock()
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(CURRENT_DIR)
 CONFIG_PATH = os.path.join(BASE_DIR, "data", "config.yaml")
+DOCKER_LOOPBACK_REWRITE_DISABLE_ENV = "OPENAI_CPA_DISABLE_DOCKER_LOOPBACK_REWRITE"
 
 
 def ts() -> str:
-    return datetime.now().strftime("%H:%M:%S")
+    tz_utc_8 = timezone(timedelta(hours=8))
+    return datetime.now(tz_utc_8).strftime("%H:%M:%S")
+
+
+def _docker_loopback_rewrite_disabled() -> bool:
+    value = str(os.getenv(DOCKER_LOOPBACK_REWRITE_DISABLE_ENV, "")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def format_docker_url(url: str) -> str:
     if not url or not isinstance(url, str):
         return url
-    if os.path.exists("/.dockerenv"):
+    if os.path.exists("/.dockerenv") and not _docker_loopback_rewrite_disabled():
         url = url.replace("127.0.0.1", "host.docker.internal")
         url = url.replace("localhost", "host.docker.internal")
     return url

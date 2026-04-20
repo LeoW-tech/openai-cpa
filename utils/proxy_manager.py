@@ -25,12 +25,18 @@ _last_switch_time = 0
 _last_success_nodes = {}
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(CURRENT_DIR)
+DOCKER_LOOPBACK_REWRITE_DISABLE_ENV = "OPENAI_CPA_DISABLE_DOCKER_LOOPBACK_REWRITE"
+
+
+def _docker_loopback_rewrite_disabled() -> bool:
+    value = str(os.getenv(DOCKER_LOOPBACK_REWRITE_DISABLE_ENV, "")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 def format_docker_url(url: str) -> str:
     """智能检测：如果在 Docker 中运行，自动把 127.0.0.1 转为宿主机魔法地址"""
     if not url or not isinstance(url, str):
         return url
-    if _IS_IN_DOCKER:
+    if _IS_IN_DOCKER and not _docker_loopback_rewrite_disabled():
         if "127.0.0.1" in url:
             return url.replace("127.0.0.1", "host.docker.internal")
         if "localhost" in url:

@@ -87,8 +87,8 @@ class RawProxyPoolTests(unittest.TestCase):
             },
         }
 
-        with patch("utils.config.init_config", return_value=fake_config), patch(
-            "utils.config.reload_proxy_config"
+        with patch.object(cfg, "init_config", return_value=fake_config), patch.object(
+            cfg, "reload_proxy_config"
         ):
             cfg.reload_all_configs()
 
@@ -118,8 +118,8 @@ class RawProxyPoolTests(unittest.TestCase):
             },
         }
 
-        with patch("utils.config.init_config", return_value=fake_config), patch(
-            "utils.config.reload_proxy_config"
+        with patch.object(cfg, "init_config", return_value=fake_config), patch.object(
+            cfg, "reload_proxy_config"
         ):
             cfg.reload_all_configs()
             first_generation = cfg.PROXY_QUEUE_GENERATION
@@ -156,16 +156,16 @@ class RawProxyPoolTests(unittest.TestCase):
             },
         }
 
-        with patch("utils.config.init_config", return_value=old_config), patch(
-            "utils.config.reload_proxy_config"
+        with patch.object(cfg, "init_config", return_value=old_config), patch.object(
+            cfg, "reload_proxy_config"
         ):
             cfg.reload_all_configs()
 
         borrowed_generation, proxy = cfg.unpack_proxy_queue_item(cfg.PROXY_QUEUE.get())
         self.assertEqual("socks5h://user:pass@127.0.0.1:1080", proxy)
 
-        with patch("utils.config.init_config", return_value=new_config), patch(
-            "utils.config.reload_proxy_config"
+        with patch.object(cfg, "init_config", return_value=new_config), patch.object(
+            cfg, "reload_proxy_config"
         ):
             cfg.reload_all_configs()
 
@@ -190,8 +190,8 @@ class RawProxyPoolTests(unittest.TestCase):
             },
         }
 
-        with patch("utils.config.init_config", return_value=fake_config), patch(
-            "utils.config.reload_proxy_config"
+        with patch.object(cfg, "init_config", return_value=fake_config), patch.object(
+            cfg, "reload_proxy_config"
         ):
             cfg.reload_all_configs()
 
