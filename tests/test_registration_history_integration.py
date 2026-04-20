@@ -8,6 +8,21 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 
+class _FakeRouter:
+    def __getattr__(self, name):
+        def _decorator(*args, **kwargs):
+            def _wrap(func):
+                return func
+
+            return _wrap
+
+        return _decorator
+
+
+class _FakeHTTPException(Exception):
+    pass
+
+
 class RegistrationHistoryIntegrationTests(unittest.TestCase):
     def setUp(self):
         fake_requests_module = types.SimpleNamespace(
@@ -46,6 +61,19 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
                     ),
                     "utils.email_providers.gmail_oauth_handler": types.SimpleNamespace(GmailOAuthHandler=object),
                     "cloudflare": types.SimpleNamespace(Cloudflare=object),
+                    "fastapi": types.SimpleNamespace(
+                        APIRouter=lambda *args, **kwargs: _FakeRouter(),
+                        Depends=lambda *args, **kwargs: None,
+                        Header=lambda default=None, **kwargs: default,
+                        Query=lambda default=None, **kwargs: default,
+                        Request=object,
+                        WebSocket=object,
+                        HTTPException=_FakeHTTPException,
+                    ),
+                    "fastapi.responses": types.SimpleNamespace(
+                        HTMLResponse=object,
+                        StreamingResponse=object,
+                    ),
                 },
             )
         )

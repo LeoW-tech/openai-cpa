@@ -4,7 +4,12 @@ import unittest
 from unittest.mock import patch
 
 fake_requests_module = types.SimpleNamespace(post=None, get=None, Response=object)
-sys.modules.setdefault("curl_cffi", types.SimpleNamespace(requests=fake_requests_module))
+sys.modules["curl_cffi"] = types.SimpleNamespace(requests=fake_requests_module, CurlMime=object)
+sys.modules["socks"] = types.SimpleNamespace(
+    SOCKS5=1,
+    HTTP=2,
+    socksocket=object,
+)
 sys.modules.setdefault(
     "utils.integrations.ai_service",
     types.SimpleNamespace(AIService=object),

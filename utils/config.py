@@ -6,7 +6,7 @@ import random
 import string
 import shutil
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from utils.proxy_manager import reload_proxy_config
 try:
@@ -25,7 +25,8 @@ DOCKER_LOOPBACK_REWRITE_DISABLE_ENV = "OPENAI_CPA_DISABLE_DOCKER_LOOPBACK_REWRIT
 
 
 def ts() -> str:
-    return datetime.now().strftime("%H:%M:%S")
+    tz_utc_8 = timezone(timedelta(hours=8))
+    return datetime.now(tz_utc_8).strftime("%H:%M:%S")
 
 
 def _docker_loopback_rewrite_disabled() -> bool:

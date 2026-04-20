@@ -1675,26 +1675,65 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             next_url = str(code2_resp.json().get("continue_url") or "").strip()
                             _history_patch(run_ctx, last_continue_url=next_url)
                             resp, current_url = _follow_redirect_chain_local(s_log, next_url, proxies)
+                    retry_oauth_after_phone_gate = False
+                    while True:
+                        if "code=" in current_url:
+                            return _submit_callback_with_history(
+                                callback_url=current_url,
+                                code_verifier=oauth_log.code_verifier,
+                                redirect_uri=oauth_log.redirect_uri,
+                                expected_state=oauth_log.state,
+                                proxies=proxies,
+                                run_ctx=run_ctx,
+                            ), password
 
-                    if "code=" in current_url and "state=" in current_url:
-                        return _submit_callback_with_history(
-                            callback_url=current_url,
-                            code_verifier=oauth_log.code_verifier,
-                            redirect_uri=oauth_log.redirect_uri,
-                            expected_state=oauth_log.state,
-                            proxies=proxies,
-                            run_ctx=run_ctx,
-                        ), password
+                        if current_url.endswith("/about-you"):
+                            user_info = generate_random_user_info()
+                            print(
+                                f"[{cfg.ts()}] [INFO] （{mask_email(email)}）初始化账户信息 "
+                                f"(昵称: {user_info['name']}, 生日: {user_info['birthdate']})..."
+                            )
 
-                    if current_url.endswith("/consent") or current_url.endswith("/workspace"):
-                        auth_cookie2 = s_log.cookies.get("oai-client-auth-session") or ""
-                        workspaces2 = _parse_workspace_from_auth_cookie(auth_cookie2)
-                        if workspaces2:
+                            sentinel_create = generate_payload(
+                                did=did,
+                                flow="create_account",
+                                proxy=proxy,
+                                user_agent=current_ua,
+                                impersonate="chrome110",
+                                ctx=log_ctx,
+                            )
+                            create_headers = _oai_headers(did, {
+                                "Referer": "https://auth.openai.com/about-you",
+                                "content-type": "application/json",
+                            })
+                            if sentinel_create:
+                                create_headers["openai-sentinel-token"] = sentinel_create
+
+                            create_account_resp = _create_account_with_history(
+                                session=s_log,
+                                headers=create_headers,
+                                user_info=user_info,
+                                proxies=proxies,
+                                run_ctx=run_ctx,
+                            )
+                            current_url = str(create_account_resp.json().get("continue_url") or "").strip()
+                            _history_patch(run_ctx, last_continue_url=current_url)
+                            if not current_url:
+                                break
+                            continue
+
+                        if current_url.endswith("/consent") or current_url.endswith("/workspace"):
+                            auth_cookie2 = s_log.cookies.get("oai-client-auth-session") or ""
+                            workspaces2 = _parse_workspace_from_auth_cookie(auth_cookie2)
+                            if not workspaces2:
+                                break
+
                             select_resp = _post_with_retry(
                                 s_log,
                                 "https://auth.openai.com/api/accounts/workspace/select",
                                 headers=_oai_headers(s_log.cookies.get("oai-did") or "", {
-                                    "Referer": current_url, "content-type": "application/json"
+                                    "Referer": current_url,
+                                    "content-type": "application/json",
                                 }),
                                 json_body={"workspace_id": str(workspaces2[0].get("id"))},
                                 proxies=proxies,
@@ -1704,29 +1743,28 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 if select_resp.status_code == 200 else ""
                             )
                             _, final_loc = _follow_redirect_chain_local(s_log, final_url, proxies)
-                            if "code=" in final_loc:
-                                return _submit_callback_with_history(
-                                    callback_url=final_loc,
-                                    expected_state=oauth_log.state,
-                                    code_verifier=oauth_log.code_verifier,
-                                    proxies=proxies,
-                                    run_ctx=run_ctx,
-                                ), password
-                    if "/add-phone" in current_url:
-                        if run_ctx is not None:
-                            run_ctx["phone_gate_hit"] = True
-                        _history_patch(run_ctx, phone_gate_hit_flag=1, last_continue_url=current_url)
-                        _history_event(
-                            run_ctx,
-                            event_type="phone_gate_hit",
-                            phase="phone",
-                            ok_flag=False,
-                            url_key=current_url,
-                            message="oauth_add_phone",
-                        )
-                        if oauth_attempt == 0:
+                            current_url = final_loc
+                            _history_patch(run_ctx, last_continue_url=current_url)
+                            if not current_url:
+                                break
                             continue
-                        else:
+
+                        if "/add-phone" in current_url:
+                            if run_ctx is not None:
+                                run_ctx["phone_gate_hit"] = True
+                            _history_patch(run_ctx, phone_gate_hit_flag=1, last_continue_url=current_url)
+                            _history_event(
+                                run_ctx,
+                                event_type="phone_gate_hit",
+                                phase="phone",
+                                ok_flag=False,
+                                url_key=current_url,
+                                message="oauth_add_phone",
+                            )
+                            if oauth_attempt == 0:
+                                retry_oauth_after_phone_gate = True
+                                break
+
                             print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}） OAuth链路触发风控，进入 HeroSMS 手机号验证流程...")
                             ok, next_url_or_reason = _try_verify_phone_via_hero_sms(
                                 session=s_log,
@@ -1735,80 +1773,33 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 run_ctx=run_ctx,
                             )
 
-                            if ok and next_url_or_reason:
-                                print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}） 手机验证成功，继续 OAuth 链路: {next_url_or_reason}")
-                                if run_ctx is not None:
-                                    run_ctx["phone_otp_success"] = True
-                                    run_ctx["last_continue_url"] = next_url_or_reason
-
-                                if next_url_or_reason.endswith("/about-you"):
-                                    user_info = generate_random_user_info()
-                                    print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）初始化账户信息 "
-                                          f"(昵称: {user_info['name']}, 生日: {user_info['birthdate']})...")
-
-                                    sentinel_create = generate_payload(did=did, flow="create_account", proxy=proxy,
-                                                                       user_agent=current_ua,
-                                                                       impersonate="chrome110", ctx=log_ctx)
-                                    create_headers = _oai_headers(did, {
-                                        "Referer": "https://auth.openai.com/about-you",
-                                        "content-type": "application/json",
-                                    })
-
-                                    if sentinel_create:
-                                        create_headers["openai-sentinel-token"] = sentinel_create
-
-                                    create_account_resp = _create_account_with_history(
-                                        session=s_log,
-                                        headers=create_headers,
-                                        user_info=user_info,
-                                        proxies=proxies,
-                                        run_ctx=run_ctx,
-                                    )
-                                    next_url_or_reason = str(create_account_resp.json().get("continue_url") or "").strip()
-                                    _history_patch(run_ctx, last_continue_url=next_url_or_reason)
-
-                                if "code=" in next_url_or_reason:
-                                    return _submit_callback_with_history(
-                                        callback_url=next_url_or_reason,
-                                        expected_state=oauth_log.state,
-                                        code_verifier=oauth_log.code_verifier,
-                                        proxies=proxies,
-                                        run_ctx=run_ctx,
-                                    ), password
-
-                                if next_url_or_reason.endswith("/consent") or next_url_or_reason.endswith("/workspace"):
-                                    auth_cookie2 = s_log.cookies.get("oai-client-auth-session") or ""
-                                    workspaces2 = _parse_workspace_from_auth_cookie(auth_cookie2)
-                                    if workspaces2:
-                                        select_resp = _post_with_retry(
-                                            s_log,
-                                            "https://auth.openai.com/api/accounts/workspace/select",
-                                            headers=_oai_headers(s_log.cookies.get("oai-did") or "", {
-                                                "Referer": next_url_or_reason, "content-type": "application/json"
-                                            }),
-                                            json_body={"workspace_id": str(workspaces2[0].get("id"))},
-                                            proxies=proxies,
-                                        )
-                                        final_url = (
-                                            _extract_next_url(select_resp.json())
-                                            if select_resp.status_code == 200 else ""
-                                        )
-                                        _, final_loc = _follow_redirect_chain_local(s_log, final_url, proxies)
-                                        if "code=" in final_loc:
-                                            return _submit_callback_with_history(
-                                                callback_url=final_loc,
-                                                expected_state=oauth_log.state,
-                                                code_verifier=oauth_log.code_verifier,
-                                                proxies=proxies,
-                                                run_ctx=run_ctx,
-                                            ), password
-                                current_url = next_url_or_reason
-                            else:
+                            if not ok or not next_url_or_reason:
                                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） {next_url_or_reason}")
-                                _set_failure(run_ctx, stage="oauth_phone_otp", message=str(next_url_or_reason), continue_url=current_url)
-                            break
-                    else:
+                                current_url = next_url_or_reason if next_url_or_reason else current_url
+                                _set_failure(
+                                    run_ctx,
+                                    stage="oauth_phone_otp",
+                                    message=str(next_url_or_reason),
+                                    continue_url=current_url,
+                                )
+                                break
+
+                            print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}） 手机验证成功，继续 OAuth 链路: {next_url_or_reason}")
+                            if run_ctx is not None:
+                                run_ctx["phone_otp_success"] = True
+                                run_ctx["last_continue_url"] = next_url_or_reason
+                            current_url = next_url_or_reason
+                            _history_patch(
+                                run_ctx,
+                                phone_otp_success_flag=1,
+                                last_continue_url=current_url,
+                            )
+                            continue
+
                         break
+
+                    if retry_oauth_after_phone_gate:
+                        continue
 
                 if run_ctx is not None: run_ctx['phone_verify'] = True
                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） OAuth 授权链路追踪失败！当前死在网页: {current_url}")
