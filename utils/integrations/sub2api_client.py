@@ -19,6 +19,7 @@ DEFAULT_SUB2API_MODEL_IDS = (
     "gpt-5.3",
     "gpt-5.3-codex",
     "gpt-5.4",
+    "gpt-5.4-mini",
 )
 
 
@@ -266,16 +267,22 @@ class Sub2APIClient:
         refresh_token = working_token_data.get("refresh_token", "")
         proxy_obj = working_token_data.get("sub2api_proxy")
         proxy_name = str(working_token_data.get("sub2api_proxy_name", "") or "").strip()
+        account_name = working_token_data.get("email", "unknown")[:64]
+        group_ids = settings.get("group_ids") or []
         if proxy_obj is None:
             proxy_obj = parse_sub2api_proxy(cfg.get_next_sub2api_proxy_url())
             if proxy_obj:
                 working_token_data["sub2api_proxy"] = proxy_obj
+
         if not refresh_token or proxy_obj or proxy_name:
-            return self._import_account(working_token_data, settings)
+            ok, msg = self._import_account(working_token_data, settings)
+            if ok:
+                self._force_bind_groups(account_name, group_ids)
+            return ok, msg
 
         url = f"{self.api_url}/api/v1/admin/accounts"
         payload = {
-            "name": working_token_data.get("email", "unknown")[:64],
+            "name": account_name,
             "platform": "openai",
             "type": "oauth",
             "credentials": {"refresh_token": refresh_token},
@@ -301,16 +308,37 @@ class Sub2APIClient:
             )
             ok, result = self._handle_response(response, success_codes=(200, 201))
             if not ok:
-                logger.warning("Sub2API direct create failed, falling back to import endpoint: %s", result)
-                return self._import_account(working_token_data, settings)
-
+                import_ok, import_msg = self._import_account(working_token_data, settings)
+                if import_ok:
+                    self._force_bind_groups(account_name, group_ids)
+                return import_ok, import_msg
             account_id = result.get("data", {}).get("id") if isinstance(result, dict) else None
             if account_id:
                 self._refresh_created_account(str(account_id))
             return True, "Sub2API account created successfully"
         except Exception as exc:
-            logger.warning("Sub2API direct create raised an exception, falling back to import: %s", exc)
-            return self._import_account(working_token_data, settings)
+            import_ok, import_msg = self._import_account(working_token_data, settings)
+            if import_ok:
+                self._force_bind_groups(account_name, group_ids)
+            return import_ok, import_msg
+
+    def _force_bind_groups(self, account_name: str, group_ids: List[int]) -> None:
+        try:
+            fetch_ok, accounts_resp = self.get_accounts(page=1, page_size=50)
+            if not fetch_ok: return
+
+            items = accounts_resp.get("data", {}).get("items", []) if isinstance(accounts_resp, dict) else []
+            for item in items:
+                if item.get("name") == account_name:
+                    target_id = str(item.get("id"))
+
+                    if group_ids:
+                        self.update_account(target_id, {"group_ids": group_ids})
+                        logger.info(f"账号 {account_name} 分组强制绑定成功: {group_ids}")
+                    self._refresh_created_account(target_id)
+                    break
+        except Exception as exc:
+            logger.error(f"推送后执行强制补丁(绑组+刷新)异常: {exc}")
 
     def update_account(self, account_id: str, update_data: Dict[str, Any]) -> Tuple[bool, Any]:
         url = f"{self.api_url}/api/v1/admin/accounts/{account_id}"

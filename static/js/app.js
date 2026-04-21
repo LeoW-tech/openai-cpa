@@ -22,7 +22,7 @@ function normalizeBooleanLike(value, defaultValue = false) {
 createApp({
     data() {
         return {
-            appVersion: 'v11.1.5',
+            appVersion: 'v11.1.6',
             isLoggedIn: !!localStorage.getItem('auth_token'),
             loginPassword: '',
             currentTab: window.location.hash.replace('#', '') || 'console',
@@ -177,6 +177,7 @@ createApp({
                 suffix_len_min: 8,
                 suffix_len_max: 12
             },
+            cloudStatusFilter: 'all',
         };
     },
     mounted() {
@@ -1535,7 +1536,7 @@ createApp({
             }
             const types = this.cloudFilters.join(',');
             try {
-                const res = await this.authFetch(`/api/cloud/accounts?types=${types}&page=${this.cloudPage}&page_size=${this.cloudPageSize}`);
+                const res = await this.authFetch(`/api/cloud/accounts?types=${types}&status_filter=${this.cloudStatusFilter}&page=${this.cloudPage}&page_size=${this.cloudPageSize}`);
                 const data = await res.json();
                 if(data.status === 'success') {
                     this.cloudAccounts = (data.data || []).map(acc => ({
