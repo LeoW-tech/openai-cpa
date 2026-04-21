@@ -6,11 +6,51 @@ import unittest
 from unittest.mock import patch
 
 
+class _FakeAPIRouter:
+    def get(self, *args, **kwargs):
+        return self._decorate
+
+    def post(self, *args, **kwargs):
+        return self._decorate
+
+    def websocket(self, *args, **kwargs):
+        return self._decorate
+
+    @staticmethod
+    def _decorate(func):
+        return func
+
+
+class _FakeHTMLResponse:
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+
+
+class _FakeStreamingResponse(_FakeHTMLResponse):
+    pass
+
+
 class ApiConfigHeroSmsTests(unittest.TestCase):
     def setUp(self):
+        fastapi_module = types.ModuleType("fastapi")
+        fastapi_module.APIRouter = _FakeAPIRouter
+        fastapi_module.Depends = lambda dependency=None: dependency
+        fastapi_module.Header = lambda default=None, **kwargs: default
+        fastapi_module.Query = lambda default=None, **kwargs: default
+        fastapi_module.Request = type("Request", (), {})
+        fastapi_module.WebSocket = type("WebSocket", (), {})
+        fastapi_module.HTTPException = type("HTTPException", (Exception,), {})
+
+        fastapi_responses_module = types.ModuleType("fastapi.responses")
+        fastapi_responses_module.HTMLResponse = _FakeHTMLResponse
+        fastapi_responses_module.StreamingResponse = _FakeStreamingResponse
+
         self._module_patches = patch.dict(
             sys.modules,
             {
+                "fastapi": fastapi_module,
+                "fastapi.responses": fastapi_responses_module,
                 "utils.core_engine": types.SimpleNamespace(cfg=types.SimpleNamespace(_c={})),
                 "utils.db_manager": types.SimpleNamespace(),
                 "utils.registration_history": types.SimpleNamespace(),
