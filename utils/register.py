@@ -667,7 +667,6 @@ def _normalize_proxy_input(proxy: Optional[str]):
 
 def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
     processed_mails: set = set()
-    mail_state: dict = {}
     proxy = cfg.format_docker_url(_normalize_proxy_input(proxy))
     if proxy and proxy.startswith("socks5://"):
         proxy = proxy.replace("socks5://", "socks5h://")
@@ -884,8 +883,12 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 except Exception as e:
                                     print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
 
-                            login_code = get_oai_code(email, jwt=email_jwt, proxies=proxies,
-                                                processed_mail_ids=processed_mails, mail_state=mail_state)
+                            login_code = get_oai_code(
+                                email,
+                                jwt=email_jwt,
+                                proxies=proxies,
+                                processed_mail_ids=processed_mails,
+                            )
                             if login_code:
                                 break
 
@@ -1091,8 +1094,12 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 except Exception as e:
                                     print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
 
-                            code = get_oai_code(email, jwt=email_jwt, proxies=proxies,
-                                                processed_mail_ids=processed_mails, mail_state=mail_state)
+                            code = get_oai_code(
+                                email,
+                                jwt=email_jwt,
+                                proxies=proxies,
+                                processed_mail_ids=processed_mails,
+                            )
                             if code:
                                 break
 
@@ -1454,8 +1461,12 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 except Exception as e:
                                     print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
 
-                            login_code_oauth = get_oai_code(email, jwt=email_jwt, proxies=proxies,
-                                                processed_mail_ids=processed_mails, mail_state=mail_state)
+                            login_code_oauth = get_oai_code(
+                                email,
+                                jwt=email_jwt,
+                                proxies=proxies,
+                                processed_mail_ids=processed_mails,
+                            )
                             if login_code_oauth:
                                 break
 
@@ -1643,8 +1654,12 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                     except Exception as e:
                                         print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）重新发送请求异常: {e}")
 
-                                code2 = get_oai_code(email, jwt=email_jwt, proxies=proxies,
-                                                     processed_mail_ids=processed_mails, mail_state=mail_state)
+                                code2 = get_oai_code(
+                                    email,
+                                    jwt=email_jwt,
+                                    proxies=proxies,
+                                    processed_mail_ids=processed_mails,
+                                )
                                 if code2:
                                     break
 
