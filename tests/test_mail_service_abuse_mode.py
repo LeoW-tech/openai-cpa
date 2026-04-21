@@ -160,6 +160,14 @@ class MailServiceAbuseModeTests(unittest.TestCase):
 
         self.assertEqual("344271", _extract_otp_code(content))
 
+    def test_extract_otp_code_supports_new_openai_mail_copy(self):
+        content = """
+        Please enter this code: 551204
+        If that doesn't work, use your verification code to continue: 551204
+        """
+
+        self.assertEqual("551204", _extract_otp_code(content))
+
     def test_graph_poll_stops_immediately_after_mailbox_enters_abuse_mode(self):
         service = _AbuseStopService()
         mailbox = {
