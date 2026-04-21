@@ -340,8 +340,7 @@ def get_email_and_token(proxies: Any = None) -> tuple:
                                     with open(cfg.CONFIG_PATH, "r", encoding="utf-8") as f:
                                         y = yaml.safe_load(f) or {}
                                     y.setdefault("luckmail", {})["tag_id"] = tag_id
-                                    with open(cfg.CONFIG_PATH, "w", encoding="utf-8") as f:
-                                        yaml.dump(y, f, allow_unicode=True, sort_keys=False)
+                                    cfg.write_yaml_file_atomic(cfg.CONFIG_PATH, y)
                                 print(f"[{cfg.ts()}] [系统] 标签 ID {tag_id} 已同步至配置文件")
                             except Exception as e:
                                 print(f"[{cfg.ts()}] [WARNING] 配置文件写入失败: {e}")

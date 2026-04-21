@@ -1,6 +1,7 @@
 import copy
 import os
 import queue
+import tempfile
 import threading
 import yaml
 import random
@@ -153,6 +154,26 @@ def deep_update_config(default_dict, user_dict):
     return updated
 
 
+def write_yaml_file_atomic(path, data, *, default_flow_style=False):
+    """通过临时文件替换目标文件，避免写到一半把原配置截空。"""
+    target_dir = os.path.dirname(path) or "."
+    os.makedirs(target_dir, exist_ok=True)
+    prefix = f".{os.path.basename(path)}."
+    fd, temp_path = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=target_dir, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, allow_unicode=True, sort_keys=False, default_flow_style=default_flow_style)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def init_config():
     config_dir = os.path.join(BASE_DIR, "data")
     config_path = os.path.join(config_dir, "config.yaml")
@@ -185,8 +206,7 @@ def init_config():
             print(f"[{ts()}] [系统] 🛠️ 检测到旧版配置缺失新参数，已仅补齐缺失项，不会覆盖现有配置值。")
             try:
                 with CONFIG_FILE_LOCK:
-                    with open(config_path, "w", encoding="utf-8") as f:
-                        yaml.dump(user_config, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+                    write_yaml_file_atomic(config_path, user_config, default_flow_style=False)
             except Exception as e:
                 print(f"[{ts()}] [WARNING] 自动补全配置文件写入失败: {e}")
 
@@ -462,13 +482,9 @@ def reload_all_configs(new_config_dict=None):
             print(f"[{ts()}] [WARNING] 无法连接到云端数据库，退回本地 YAML 模式: {e}")
 
     if new_config_dict is not None:
+        with CONFIG_FILE_LOCK:
+            write_yaml_file_atomic(CONFIG_PATH, new_config_dict, default_flow_style=False)
         _c = new_config_dict
-        try:
-            with CONFIG_FILE_LOCK:
-                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                    yaml.dump(new_config_dict, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
-        except Exception:
-            pass
 
         if is_cloud_db and db_ready:
             try:

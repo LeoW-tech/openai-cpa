@@ -13,6 +13,8 @@ cd "${PROJECT_ROOT}"
 
 mkdir -p "${DATA_DIR}"
 
+docker stop -t 15 "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+
 if [[ -f "${CONFIG_FILE}" ]]; then
   cp "${CONFIG_FILE}" "${CONFIG_FILE}.bak-${STAMP}"
 fi
