@@ -808,7 +808,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                     continue_url = signup_json.get("continue_url", "")
                     if "log-in" in continue_url:
                         is_takeover = True
-                        print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）该邮箱已注册！准备走【无密码邮箱验证码】接管登录...")
+                        print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）该邮箱被标记为已注册！准备走【无密码邮箱验证码】接管登录...")
                         login_ctx = reg_ctx.copy() if reg_ctx else {}
                         sentinel_login = generate_payload(did=did, flow="authorize_continue", proxy=proxy, user_agent=current_ua,
                                                           impersonate="chrome110", ctx=login_ctx)
@@ -1154,7 +1154,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 url_key=code_account_url,
                                 message="register_add_phone",
                             )
-                            if attempt < MAX_REG_RETRIES - 1:
+                            if not bool(cfg.HERO_SMS_ENABLED) and attempt < MAX_REG_RETRIES - 1:
                                 print(
                                     f"[{cfg.ts()}] [INFO] （{mask_email(email)}） 准备重置环境，重新进行第 {attempt + 2} 次 注册流程尝试...")
                                 continue
@@ -1211,12 +1211,18 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                         err_code = str(err_json.get("error", {}).get("code", "")).strip()
                         err_msg = str(err_json.get("error", {}).get("message", "")).strip()
                         if err_code == "identity_provider_mismatch":
-                            try:
-                                is_takeover = True
-                                print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）检测到第三方登录账号！强行变道走无密码 OTP...")
-                                print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）已打上接管标记，交由 OAuth 提取流程进行无密码登录...")
-                            except Exception as e:
-                                 pass
+                            if getattr(cfg, 'DISABLE_FORCED_TAKEOVER', True):
+                                print(
+                                    f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）该邮箱标记为第三方登录账号，因开启了[放弃强行变道]开关，直接丢弃以节省接码成本。")
+                                if run_ctx is not None: run_ctx['signup_blocked'] = True
+                                return None, None
+                            else:
+                                try:
+                                    is_takeover = True
+                                    print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）检测到第三方登录账号！强行变道走无密码 OTP...")
+                                    print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}）已打上接管标记，交由 OAuth 提取流程进行无密码登录...")
+                                except Exception as e:
+                                     pass
 
                         if not is_takeover:
                             if "been deleted or deactivated" in err_msg:
@@ -1686,6 +1692,8 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             _history_patch(run_ctx, last_continue_url=next_url)
                             resp, current_url = _follow_redirect_chain_local(s_log, next_url, proxies)
                     retry_oauth_after_phone_gate = False
+                    retry_oauth_after_phone_gate = False
+                    oauth_trace_error_code = ""
                     while True:
                         if "code=" in current_url:
                             return _submit_callback_with_history(
@@ -1726,7 +1734,9 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 proxies=proxies,
                                 run_ctx=run_ctx,
                             )
-                            current_url = str(create_account_resp.json().get("continue_url") or "").strip()
+                            create_json = create_account_resp.json() or {}
+                            oauth_trace_error_code = str(create_json.get("error", {}).get("code", "")).strip()
+                            current_url = str(create_json.get("continue_url") or "").strip()
                             _history_patch(run_ctx, last_continue_url=current_url)
                             if not current_url:
                                 break
@@ -1812,8 +1822,9 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                         continue
 
                 if run_ctx is not None: run_ctx['phone_verify'] = True
-                print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） OAuth 授权链路追踪失败！当前死在网页: {current_url}")
-                _set_failure(run_ctx, stage="oauth_trace", message=current_url, continue_url=current_url)
+                error_hint = "当前账号被阻断" if oauth_trace_error_code == "identity_provider_mismatch" else ""
+                print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） OAuth 授权链路追踪失败！当前死在网页: {current_url}{error_hint}")
+                _set_failure(run_ctx, stage="oauth_trace", message=current_url or error_hint, continue_url=current_url)
                 return None, None
 
             except Exception as e:
