@@ -89,99 +89,6 @@ def get_last_email() -> Optional[str]:
     return getattr(_thread_data, 'last_attempt_email', None)
 
 
-def _derive_master_email_for_listener(email: str) -> str:
-    normalized = str(email or "").strip().lower()
-    if "@" not in normalized:
-        return normalized
-    user_part, domain_part = normalized.split("@", 1)
-    if "+" in user_part:
-        user_part = user_part.split("+", 1)[0]
-    return f"{user_part}@{domain_part}"
-
-
-def acquire_local_microsoft_listener(
-        email: str,
-        jwt: Any = "",
-        proxies: Any = None,
-        ms_service: Any = None,
-):
-    mailbox = None
-    if isinstance(jwt, dict):
-        mailbox = dict(jwt)
-    else:
-        try:
-            parsed = json.loads(jwt or "{}")
-            if isinstance(parsed, dict):
-                mailbox = parsed
-        except Exception:
-            mailbox = None
-
-    if not mailbox:
-        return None
-
-    mailbox["email"] = str(mailbox.get("email") or email).strip()
-    mailbox["master_email"] = str(mailbox.get("master_email") or _derive_master_email_for_listener(mailbox["email"])).strip().lower()
-    if ms_service is None:
-        from utils.email_providers.local_microsoft_service import LocalMicrosoftService
-        ms_service = LocalMicrosoftService(proxies=proxies)
-    global_postman_fleet.acquire_mailbox_listener(ms_service, mailbox)
-    return mailbox
-
-
-def ensure_local_microsoft_listener(
-        email: str,
-        jwt: Any = "",
-        proxies: Any = None,
-        ms_service: Any = None,
-):
-    return acquire_local_microsoft_listener(
-        email=email,
-        jwt=jwt,
-        proxies=proxies,
-        ms_service=ms_service,
-    )
-
-
-def release_local_microsoft_listener(email: str, jwt: Any = ""):
-    mailbox = None
-    if isinstance(jwt, dict):
-        mailbox = jwt
-    else:
-        try:
-            parsed = json.loads(jwt or "{}")
-            if isinstance(parsed, dict):
-                mailbox = parsed
-        except Exception:
-            mailbox = None
-
-    master_email = ""
-    if isinstance(mailbox, dict):
-        master_email = str(mailbox.get("master_email") or mailbox.get("email") or "").strip().lower()
-    if not master_email:
-        master_email = _derive_master_email_for_listener(email)
-    global_postman_fleet.release_mailbox_listener(master_email)
-
-
-def stop_local_microsoft_listener(email: str, jwt: Any = ""):
-    mailbox = None
-    if isinstance(jwt, dict):
-        mailbox = jwt
-    else:
-        try:
-            parsed = json.loads(jwt or "{}")
-            if isinstance(parsed, dict):
-                mailbox = parsed
-        except Exception:
-            mailbox = None
-
-    master_email = ""
-    if isinstance(mailbox, dict):
-        master_email = str(mailbox.get("master_email") or mailbox.get("email") or "").strip().lower()
-    if not master_email:
-        master_email = _derive_master_email_for_listener(email)
-    global_postman_fleet.stop_mailbox_listener(master_email)
-
-
 def _smart_sleep(secs):
     for _ in range(int(secs * 10)):
         if getattr(cfg, 'GLOBAL_STOP', False):
@@ -547,7 +454,7 @@ def get_email_and_token(proxies: Any = None) -> tuple:
         email = mailbox_info["email"]
         set_last_email(email)
         print(f"[{cfg.ts()}] [INFO] 微软库分配并锁定账号: ({mask_email(email)})")
-        global_postman_fleet.acquire_mailbox_listener(ms_service, mailbox_info)
+        global_postman_fleet.add_mailbox_listener(ms_service, mailbox_info)
         return email, json.dumps(mailbox_info, ensure_ascii=False)
 
     if mode == "gmail_fission":
@@ -611,10 +518,6 @@ def get_email_and_token(proxies: Any = None) -> tuple:
     ai_switch_on = getattr(cfg, 'AI_ENABLE_PROFILE', False)
     if ai_switch_on:
         print(f"[{cfg.ts()}] [AI-状态] 已开启 （{mask_email(email_str)}） AI 智能邮箱域名信息增强...")
-
-    if mode == "Gmail_OAuth":
-        print(f"[{cfg.ts()}] [INFO] Gmail OAuth 模式生成注册邮箱: {mask_email(email_str)}")
-        return email_str, ""
 
     if mode == "cloudmail":
         token = get_cm_token(mail_proxies)
@@ -761,123 +664,24 @@ def _extract_mail_fields(mail: dict) -> dict:
 
 
 OTP_CODE_PATTERN = r"(?<!\d)(\d{6})(?!\d)"
-OTP_SEMANTIC_PATTERNS = [
-    ("chatgpt_code", re.compile(r"(?i)\b(?:your\s+)?chatgpt code is\b[^\d]{0,48}(\d{6})")),
-    ("openai_code", re.compile(r"(?i)\b(?:your\s+)?openai code is\b[^\d]{0,48}(\d{6})")),
-    ("enter_this_code", re.compile(r"(?i)\benter this code\b[^\d]{0,48}(\d{6})")),
-    (
-        "temporary_verification_code",
-        re.compile(r"(?i)\btemporary verification code\b[^\d]{0,96}(\d{6})"),
-    ),
-    (
-        "verification_code_to_continue",
-        re.compile(r"(?i)\bverification code to continue\b[^\d]{0,96}(\d{6})"),
-    ),
-    ("temporary_login_code", re.compile(r"(?i)\btemporary openai login code\b[^\d]{0,96}(\d{6})")),
-    ("login_code", re.compile(r"(?i)\blog(?:-|\s)?in code\b[^\d]{0,96}(\d{6})")),
-    ("generic_code_is", re.compile(r"(?i)\bcode is\b[^\d]{0,48}(\d{6})")),
-]
-
-
-def _sanitize_email_visible_text(content: str) -> str:
-    if not content:
-        return ""
-    visible = unescape(content)
-    visible = re.sub(r"(?is)<(script|style)\b[^>]*>.*?</\1>", " ", visible)
-    visible = re.sub(r"(?i)\bhttps?://[^\s\"'<>]+", " ", visible)
-    visible = re.sub(r"(?i)#[0-9a-f]{6}\b", " ", visible)
-    visible = re.sub(r"(?is)<[^>]+>", " ", visible)
-    visible = re.sub(r"(?i)\b[a-z0-9_]{2,}=[^\s\"'<>]+", " ", visible)
-    visible = re.sub(r"\s+", " ", visible)
-    return visible.strip()
-
-
-def _collect_semantic_otp_candidates(content: str, source: str) -> list[dict[str, Any]]:
-    candidates = []
-    for label, pattern in OTP_SEMANTIC_PATTERNS:
-        for match in pattern.finditer(content):
-            candidates.append(
-                {
-                    "code": match.group(1),
-                    "source": source,
-                    "match_type": label,
-                    "position": match.start(),
-                }
-            )
-    return candidates
-
-
-def _collect_fallback_otp_candidates(content: str, source: str) -> list[dict[str, Any]]:
-    return [
-        {
-            "code": match.group(1),
-            "source": source,
-            "match_type": "fallback",
-            "position": match.start(),
-        }
-        for match in re.finditer(OTP_CODE_PATTERN, content)
-    ]
-
-
-def _log_otp_candidates(candidates: list[dict[str, Any]], chosen: dict[str, Any], log_label: str) -> None:
-    if not log_label or not chosen:
-        return
-    unique_candidates = []
-    seen = set()
-    for item in candidates:
-        key = (item["code"], item["source"], item["match_type"])
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_candidates.append(f"{item['source']}:{item['match_type']}={item['code']}")
-    if len(unique_candidates) <= 1:
-        return
-    joined = ", ".join(unique_candidates[:6])
-    print(
-        f"[{cfg.ts()}] [DEBUG] OTP候选({log_label}): {joined} | 采用 {chosen['source']}:{chosen['match_type']}={chosen['code']}",
-        flush=True,
-    )
-
-
-def _extract_otp_code_from_email_parts(
-    *,
-    subject: str = "",
-    body_preview: str = "",
-    body_html: str = "",
-    log_label: str = "",
-) -> str:
-    sources = [
-        ("subject", _sanitize_email_visible_text(subject)),
-        ("bodyPreview", _sanitize_email_visible_text(body_preview)),
-        ("body", _sanitize_email_visible_text(body_html)),
-    ]
-    all_candidates = []
-
-    for source_name, content in sources:
-        if not content:
-            continue
-        semantic_candidates = _collect_semantic_otp_candidates(content, source_name)
-        all_candidates.extend(semantic_candidates)
-        if semantic_candidates:
-            chosen = semantic_candidates[0]
-            _log_otp_candidates(all_candidates, chosen, log_label)
-            return chosen["code"]
-
-    for source_name, content in sources:
-        if not content:
-            continue
-        fallback_candidates = _collect_fallback_otp_candidates(content, source_name)
-        all_candidates.extend(fallback_candidates)
-        if fallback_candidates:
-            chosen = fallback_candidates[0]
-            _log_otp_candidates(all_candidates, chosen, log_label)
-            return chosen["code"]
-
-    return ""
 
 
 def _extract_otp_code(content: str) -> str:
-    return _extract_otp_code_from_email_parts(body_html=content)
+    if not content:
+        return ""
+    patterns = [
+        r"(?i)Your (?:ChatGPT|OpenAI) code is\s*(\d{6})",
+        r"(?i)(?:ChatGPT|OpenAI) code is\s*(\d{6})",
+        r"(?i)verification code to continue:\s*(\d{6})",
+        r"(?i)Subject:.*?(\d{6})",
+        r"(?i)enter this code:\s*(\d{6})",
+    ]
+    for p in patterns:
+        m = re.search(p, content)
+        if m:
+            return m.group(1)
+    fallback = re.search(r"(?<!\d)(\d{6})(?!\d)", content)
+    return fallback.group(1) if fallback else ""
 
 
 def _create_imap_conn(proxy_str=None):
@@ -886,104 +690,11 @@ def _create_imap_conn(proxy_str=None):
         return ProxyIMAP4_SSL(cfg.IMAP_SERVER, cfg.IMAP_PORT, proxy_url=proxy_str, timeout=15)
     return imaplib.IMAP4_SSL(cfg.IMAP_SERVER, cfg.IMAP_PORT, timeout=15)
 
-def _get_local_microsoft_mail_state(mail_state: Optional[dict], target_email: str) -> Optional[dict]:
-    if mail_state is None:
-        return None
-    email_state = mail_state.setdefault(target_email.lower().strip(), {})
-    return email_state.setdefault("local_microsoft", {})
-
-
-def _poll_local_ms_for_oai_code_graph(
-        ms_service,
-        target_email: str,
-        mailbox_dict: dict,
-        processed_mail_ids: Optional[set] = None,
-        mail_state: Optional[dict] = None,
-        max_attempts: int = 20,
-        excluded_ids: Optional[set] = None,
-) -> str:
-    from datetime import datetime
-
-    excluded_ids = excluded_ids or set()
-    processed_mail_ids = set() if processed_mail_ids is None else processed_mail_ids
-    tgt = target_email.lower().strip()
-    assigned_at = float(mailbox_dict.get("assigned_at") or time.time())
-    assigned_floor_ts = assigned_at - 60
-    graph_state = _get_local_microsoft_mail_state(mail_state, tgt)
-
-    print(f"[{cfg.ts()}] [INFO] 靶向轮询器启动 | 目标: {mask_email(tgt)} | 已屏蔽历史邮件: {len(excluded_ids)}", flush=True)
-
-    for attempt in range(max_attempts):
-        if getattr(cfg, 'GLOBAL_STOP', False): return ""
-        messages = ms_service.fetch_openai_messages(mailbox_dict)
-        if mailbox_dict.get("_polling_stopped") == "abuse_mode":
-            return ""
-
-        if messages:
-            for msg in messages:
-                msg_id = msg.get('id')
-                if not msg_id or msg_id in excluded_ids or msg_id in processed_mail_ids:
-                    continue
-                raw_date = msg.get('receivedDateTime', '').replace('Z', '+00:00')
-                try:
-                    received_ts = datetime.fromisoformat(raw_date).timestamp()
-                except Exception:
-                    continue
-                last_accepted_ts = float((graph_state or {}).get("last_accepted_received_ts") or 0.0)
-                floor_ts = max(assigned_floor_ts, last_accepted_ts)
-                if received_ts < floor_ts:
-                    break
-
-                sender = str(msg.get('from', {}).get('emailAddress', {}).get('address', '')).lower()
-                if "openai.com" not in sender:
-                    continue
-                recipients = [str(r.get('emailAddress', {}).get('address', '')).lower().strip()
-                              for r in msg.get('toRecipients', [])]
-                body_content = msg.get('body', {}).get('content', '')
-                body_preview = msg.get('bodyPreview', '')
-                subject = msg.get('subject', '')
-                subject_lower = subject.lower()
-                body_lower = body_content.lower()
-                body_preview_lower = body_preview.lower()
-
-                is_hit = (
-                    (tgt in recipients)
-                    or (f"to: {tgt}" in body_lower)
-                    or (tgt in body_lower)
-                    or (f"to: {tgt}" in body_preview_lower)
-                    or (tgt in body_preview_lower)
-                    or (tgt in subject_lower)
-                )
-
-                if is_hit:
-                    code = _extract_otp_code_from_email_parts(
-                        subject=subject,
-                        body_preview=body_preview,
-                        body_html=body_content,
-                        log_label=mask_email(tgt),
-                    )
-                    if code:
-                        processed_mail_ids.add(msg_id)
-                        if graph_state is not None:
-                            graph_state["last_accepted_received_ts"] = max(last_accepted_ts, received_ts)
-                        print(f"\n[{cfg.ts()}] [SUCCESS] 🎯 捕获专属验证码: {code} -> {mask_email(tgt)}", flush=True)
-                        return code
-
-        time.sleep(5)
-    return ""
-
-
-def record_ms_snapshot(email: str, jwt: str, proxies: Any = None):
-    # 兼容旧调用方；v11.0.3 起本地微软邮箱改由邮局派常驻监听，不再依赖快照预热。
-    return None
-
-
 def get_oai_code(
         email: str,
         jwt: str = "",
         proxies: Any = None,
         processed_mail_ids: set = None,
-        mail_state: Optional[dict] = None,
         pattern: str = OTP_CODE_PATTERN,
         max_attempts: int = 20,
 ) -> str:
@@ -1022,32 +733,8 @@ def get_oai_code(
             pass
 
         if local_ms_account:
-            local_ms_account["email"] = str(local_ms_account.get("email") or email).strip()
-            from utils.email_providers.local_microsoft_service import LocalMicrosoftService
-            ms_service = LocalMicrosoftService(proxies=mail_proxies)
-            listener_mailbox = acquire_local_microsoft_listener(
-                email=email,
-                jwt=local_ms_account,
-                proxies=mail_proxies,
-                ms_service=ms_service,
-            ) or local_ms_account
-
-            try:
-                timeout = max(5, max_attempts * 3)
-                fast_code = wait_for_code(email, timeout=timeout)
-                if fast_code:
-                    return fast_code
-
-                return _poll_local_ms_for_oai_code_graph(
-                    ms_service=ms_service,
-                    target_email=email,
-                    mailbox_dict=listener_mailbox,
-                    processed_mail_ids=processed_mail_ids,
-                    mail_state=mail_state,
-                    max_attempts=max_attempts,
-                )
-            finally:
-                release_local_microsoft_listener(email, listener_mailbox)
+            timeout = max_attempts * 3
+            return wait_for_code(email, timeout=timeout)
         else:
             print(f"\n[{cfg.ts()}] [ERROR] 缺少微软邮箱凭据，无法收信。")
             return ""
