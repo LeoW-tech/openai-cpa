@@ -1,3 +1,4 @@
+import copy
 import os
 import queue
 import threading
@@ -140,11 +141,11 @@ def unpack_proxy_queue_item(item):
 
 
 def deep_update_config(default_dict, user_dict):
-    """递归检查配置文件"""
+    """递归补齐缺失配置项，绝不覆盖用户已有值。"""
     updated = False
     for key, value in default_dict.items():
         if key not in user_dict:
-            user_dict[key] = value
+            user_dict[key] = copy.deepcopy(value)
             updated = True
         elif isinstance(value, dict) and isinstance(user_dict[key], dict):
             if deep_update_config(value, user_dict[key]):
@@ -181,7 +182,7 @@ def init_config():
             default_config = yaml.safe_load(f) or {}
 
         if deep_update_config(default_config, user_config):
-            print(f"[{ts()}] [系统] 🛠️ 检测到旧版配置缺失新参数，已自动补齐并生效！")
+            print(f"[{ts()}] [系统] 🛠️ 检测到旧版配置缺失新参数，已仅补齐缺失项，不会覆盖现有配置值。")
             try:
                 with CONFIG_FILE_LOCK:
                     with open(config_path, "w", encoding="utf-8") as f:
