@@ -853,7 +853,15 @@ async def export_sub2api_accounts(req: ExportReq, token: str = Depends(verify_to
 @router.get("/api/cloud/accounts")
 def get_cloud_accounts(types: str = "sub2api,cpa", status_filter: str = Query("all"), page: int = Query(1), page_size: int = Query(50),
                        token: str = Depends(verify_token)):
-    type_list = types.split(",")
+    raw_types = getattr(types, "default", types)
+    raw_status_filter = getattr(status_filter, "default", status_filter)
+    raw_page = getattr(page, "default", page)
+    raw_page_size = getattr(page_size, "default", page_size)
+
+    type_list = [item.strip().lower() for item in str(raw_types or "").split(",") if item.strip()]
+    status_filter = str(raw_status_filter or "all").strip().lower()
+    page = int(raw_page or 1)
+    page_size = int(raw_page_size or 50)
     combined_data = []
     try:
         if "sub2api" in type_list and getattr(cfg, 'SUB2API_URL', None) and getattr(cfg, 'SUB2API_KEY', None):

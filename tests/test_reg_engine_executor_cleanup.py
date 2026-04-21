@@ -44,7 +44,7 @@ class RegEngineExecutorCleanupTests(unittest.TestCase):
             engine.current_thread.join(timeout=2)
 
         self.assertFalse(engine.current_thread.is_alive())
-        executor.shutdown.assert_called_once_with(wait=False)
+        executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
         self.assertIsNone(engine._executor)
 
     def test_run_threads_reclaim_executor_after_natural_completion(self):
@@ -76,7 +76,7 @@ class RegEngineExecutorCleanupTests(unittest.TestCase):
                          patch("utils.core_engine.asyncio.set_event_loop"):
                         getattr(engine, runner_name)(args)
 
-                executor.shutdown.assert_called_once_with(wait=False)
+                executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
                 self.assertIsNone(engine._executor)
 
 
