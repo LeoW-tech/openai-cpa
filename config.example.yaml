@@ -146,7 +146,9 @@ clash_proxy_pool:
   fastest_mode: false
   # 目标集群实例数量
   cluster_count: 5
-  # 订阅链接存储
+  # 服务器本地受管订阅 YAML 文件路径
+  sub_file_path: "data/mihomo-pool/subscription-source.yaml"
+  # 兼容旧版远程订阅 URL；新版本默认优先使用本地文件
   sub_url: ""
   # 你机场包含所有节点的策略组名称，带有 Emoji 也没关系
   group_name: "节点选择"

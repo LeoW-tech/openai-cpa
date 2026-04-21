@@ -1859,19 +1859,19 @@
                                         </p>
                                     </div>
                                     <div class="bg-sky-50/50 p-5 rounded-2xl border border-sky-100 shadow-inner">
-                                        <label class="block text-xs text-sky-900 font-black uppercase tracking-wider mb-3">订阅更新</label>
+                                        <label class="block text-xs text-sky-900 font-black uppercase tracking-wider mb-3">本地订阅更新</label>
                                         <div class="flex flex-col sm:flex-row gap-3">
                                             <div class="relative flex-1">
-                                                <input v-if="!showPwd.subUrl" readonly :value="maskValue(clashPool.subUrl)"
+                                                <input v-if="!showPwd.subFilePath" readonly :value="maskValue(clashPool.subFilePath)"
                                                        class="w-full appearance-none bg-white border border-slate-200 text-slate-400 rounded-xl py-3 px-4 pr-10 focus:outline-none shadow-sm text-sm font-mono disabled:bg-slate-50 cursor-default">
 
-                                                <input v-else type="text" v-model="clashPool.subUrl"
-                                                       placeholder="请在此输入订阅 URL"
+                                                <input v-else type="text" v-model="clashPool.subFilePath"
+                                                       placeholder="请在此输入服务器本地 YAML 文件路径"
                                                        class="w-full appearance-none bg-white border border-slate-200 text-slate-700 rounded-xl py-3 px-4 pr-10 focus:outline-none focus:border-sky-500 transition-colors shadow-sm text-sm font-mono disabled:bg-slate-50">
 
-                                                <button @click="showPwd.subUrl = !showPwd.subUrl"
+                                                <button @click="showPwd.subFilePath = !showPwd.subFilePath"
                                                         class="absolute right-3 top-1/2 -translate-y-1/2 text-lg text-slate-400 hover:text-blue-500 disabled:opacity-50 transition-transform hover:scale-110">
-                                                    {{ showPwd.subUrl ? '👁️' : '🙈' }}
+                                                    {{ showPwd.subFilePath ? '👁️' : '🙈' }}
                                                 </button>
                                             </div>
                                             <div class="flex gap-2">
@@ -1883,7 +1883,7 @@
                                             </div>
                                         </div>
                                         <p class="mt-3 text-[11px] leading-5 text-slate-500 font-bold">
-                                            推荐顺序：先“同步实例”，再把目标切到“🚀 全部”执行一次订阅更新。
+                                            推荐顺序：先“同步实例”，再把目标切到“🚀 全部”执行一次本地订阅更新。
                                         </p>
                                     </div>
                                 </div>

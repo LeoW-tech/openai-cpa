@@ -324,6 +324,7 @@ _clash_enable: bool = False
 _clash_pool_mode: bool = False
 CLASH_CLUSTER_COUNT: int = 5
 CLASH_SUB_URL: str = ""
+CLASH_SUB_FILE_PATH: str = ""
 WARP_PROXY_LIST: list = []
 _raw_proxy_enable: bool = False
 RAW_PROXY_LIST: list = []
@@ -412,7 +413,7 @@ def reload_all_configs(new_config_dict=None):
     global NORMAL_SLEEP_MIN, NORMAL_SLEEP_MAX, NORMAL_TARGET_COUNT
     global _clash_enable, _clash_pool_mode, WARP_PROXY_LIST, PROXY_QUEUE, PROXY_QUEUE_GENERATION
     global _raw_proxy_enable, RAW_PROXY_LIST
-    global CLASH_CLUSTER_COUNT, CLASH_SUB_URL
+    global CLASH_CLUSTER_COUNT, CLASH_SUB_URL, CLASH_SUB_FILE_PATH
     global ENABLE_SUB2API_MODE, SUB2API_URL, SUB2API_KEY
     global SUB2API_MIN_THRESHOLD, SUB2API_BATCH_COUNT, SUB2API_CHECK_INTERVAL, SUB2API_THREADS, SUB2API_TEST_MODEL
     global SUB2API_SAVE_TO_LOCAL
@@ -665,6 +666,7 @@ def reload_all_configs(new_config_dict=None):
     _clash_pool_mode = _clash_conf.get("pool_mode", False)
     CLASH_CLUSTER_COUNT = int(_clash_conf.get("cluster_count") or 5)
     CLASH_SUB_URL = str(_clash_conf.get("sub_url") or "").strip()
+    CLASH_SUB_FILE_PATH = str(_clash_conf.get("sub_file_path") or "").strip()
     WARP_PROXY_LIST = _c.get("warp_proxy_list", [])
     _raw_proxy_conf = _c.get("raw_proxy_pool", {})
     _raw_proxy_enable = safe_bool(_raw_proxy_conf.get("enable", False), default=False)

@@ -10,6 +10,7 @@ os.makedirs(BASE_PATH, exist_ok=True)
 
 HOST_PROJECT_PATH = os.getenv("HOST_PROJECT_PATH", os.getcwd())
 HOST_BASE_PATH = os.path.join(HOST_PROJECT_PATH, "data", "mihomo-pool")
+MANAGED_SUBSCRIPTION_FILE_REL = os.path.join("data", "mihomo-pool", "subscription-source.yaml")
 
 IMAGE_NAME = "metacubex/mihomo:latest"
 INSTANCE_PROXY_PORT = 7890
@@ -50,6 +51,12 @@ def _pool_secret():
 
 def _pool_group_name():
     return str(_load_runtime_config().get("clash_proxy_pool", {}).get("group_name", "")).strip()
+
+
+def _pool_sub_file_path():
+    raw_value = _load_runtime_config().get("clash_proxy_pool", {}).get("sub_file_path", "")
+    value = str(raw_value or "").strip()
+    return value or MANAGED_SUBSCRIPTION_FILE_REL
 
 
 def _instance_name(index):
@@ -107,6 +114,33 @@ def _load_yaml_file(path):
 def _write_yaml_file(path, data):
     with open(path, "w", encoding="utf-8") as fh:
         yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False)
+
+
+def _resolve_host_path(path):
+    raw_path = str(path or "").strip()
+    if not raw_path:
+        return ""
+    if os.path.isabs(raw_path):
+        return raw_path
+    return os.path.join(HOST_PROJECT_PATH, raw_path)
+
+
+def _load_yaml_file_strict(path):
+    resolved_path = _resolve_host_path(path)
+    if not resolved_path:
+        raise ValueError("未提供本地订阅文件路径")
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"本地订阅文件不存在: {resolved_path}")
+
+    try:
+        with open(resolved_path, "r", encoding="utf-8") as fh:
+            loaded = yaml.safe_load(fh)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"本地订阅文件 YAML 解析失败: {resolved_path}") from exc
+    except OSError as exc:
+        raise ValueError(f"本地订阅文件读取失败: {resolved_path}") from exc
+
+    return loaded or {}
 
 
 def _is_subscription_config(config):
@@ -168,6 +202,44 @@ def _discover_subscription_template(base_path):
             return config
 
     return None
+
+
+def _load_managed_subscription_template():
+    managed_path = _resolve_host_path(_pool_sub_file_path())
+    if not managed_path or not os.path.isfile(managed_path):
+        return None
+
+    config = _load_yaml_file_strict(managed_path)
+    if not _is_subscription_config(config):
+        raise ValueError(f"本地订阅文件缺少 proxy-groups: {managed_path}")
+    return config
+
+
+def _load_subscription_source(*, sub_file_path="", sub_url=""):
+    normalized_file_path = str(sub_file_path or "").strip()
+    normalized_sub_url = str(sub_url or "").strip()
+
+    if normalized_file_path:
+        config = _load_yaml_file_strict(normalized_file_path)
+        if not _is_subscription_config(config):
+            raise ValueError(
+                f"本地订阅文件缺少 proxy-groups: {_resolve_host_path(normalized_file_path)}"
+            )
+        return config
+
+    if normalized_sub_url:
+        headers = {
+            "User-Agent": "Clash-meta",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        response = requests.get(normalized_sub_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        raw_yaml = yaml.safe_load(response.text) or {}
+        if not _is_subscription_config(raw_yaml):
+            raise ValueError("远程订阅内容缺少 proxy-groups")
+        return raw_yaml
+
+    raise ValueError("未提供订阅源")
 
 
 def _collect_config_health(base_path, instance_names):
@@ -379,7 +451,13 @@ def deploy_clash_pool(count):
         return False, "Docker未就绪"
 
     host_base_path = _host_base_path(client)
-    template_config = _discover_subscription_template(BASE_PATH)
+    try:
+        template_config = _load_managed_subscription_template()
+    except (FileNotFoundError, ValueError) as exc:
+        return False, str(exc)
+
+    if template_config is None:
+        template_config = _discover_subscription_template(BASE_PATH)
 
     for container in _sorted_clash_containers(client):
         try:
@@ -427,19 +505,13 @@ def deploy_clash_pool(count):
     return True, _build_deploy_warning_message(count, health)
 
 
-def patch_and_update(url, target):
+def patch_and_update(sub_file_path="", sub_url="", target="all"):
     client = get_client()
     if not client:
         return False, "Docker未就绪"
 
     try:
-        headers = {
-            "User-Agent": "Clash-meta",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }
-        response = requests.get(url, headers=headers, timeout=30)
-        response.raise_for_status()
-        raw_yaml = yaml.safe_load(response.text) or {}
+        raw_yaml = _load_subscription_source(sub_file_path=sub_file_path, sub_url=sub_url)
 
         containers = _sorted_clash_containers(client)
         if not containers:

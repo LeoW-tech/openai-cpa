@@ -104,7 +104,7 @@ createApp({
                 temporam: false,
                 tmailor_token: false,
                 fvia_token: false,
-                subUrl: false,
+                subFilePath: false,
                 showMailboxesPlaintext: false,
                 db_pass: false,
                 master_rt: false
@@ -156,7 +156,7 @@ createApp({
             BUILTIN_CLIENT_ID: "7feada80-d946-4d06-b134-73afa3524fb7",
             clashPool: {
                 loading: false,
-                subUrl: '',
+                subFilePath: '',
                 target: 'all',
                 count: 5,
                 instances: [],
@@ -498,8 +498,10 @@ createApp({
                 if (this.config.clash_proxy_pool.cluster_count !== undefined) {
                     this.clashPool.count = parseInt(this.config.clash_proxy_pool.cluster_count) || 5;
                 }
-                if (this.config.clash_proxy_pool.sub_url !== undefined) {
-                    this.clashPool.subUrl = this.config.clash_proxy_pool.sub_url;
+                if (this.config.clash_proxy_pool.sub_file_path !== undefined) {
+                    this.clashPool.subFilePath = this.config.clash_proxy_pool.sub_file_path || '';
+                } else if (this.config.clash_proxy_pool.sub_url !== undefined) {
+                    this.clashPool.subFilePath = this.config.clash_proxy_pool.sub_url || '';
                 }
                 if (!this.config.raw_proxy_pool || typeof this.config.raw_proxy_pool !== 'object' || Array.isArray(this.config.raw_proxy_pool)) {
                     this.config.raw_proxy_pool = { enable: false, proxy_list: [] };
@@ -527,7 +529,8 @@ createApp({
                 if(this.config.clash_proxy_pool) {
                     this.config.clash_proxy_pool.blacklist = this.blacklistStr.split('\n').map(s => s.trim()).filter(s => s);
                     this.config.clash_proxy_pool.cluster_count = parseInt(this.clashPool.count) || 5;
-                    this.config.clash_proxy_pool.sub_url = this.clashPool.subUrl;
+                    this.config.clash_proxy_pool.sub_file_path = this.clashPool.subFilePath;
+                    this.config.clash_proxy_pool.sub_url = '';
                 }
                 if (this.config?.sub2api_mode) {
                     this.config.sub2api_mode.default_proxy = String(this.config.sub2api_mode.default_proxy || '')
@@ -2186,12 +2189,12 @@ createApp({
             } catch (e) { this.showToast('网络错误', 'error'); }
         },
         async handleClashUpdate() {
-            if (!this.clashPool.subUrl) return this.showToast('请输入订阅链接', 'error');
+            if (!this.clashPool.subFilePath) return this.showToast('请输入服务器本地订阅 YAML 文件路径', 'error');
             this.clashPool.loading = true;
             try {
                 const res = await this.authFetch('/api/clash/update', {
                     method: 'POST',
-                    body: JSON.stringify({ sub_url: this.clashPool.subUrl, target: this.clashPool.target })
+                    body: JSON.stringify({ sub_file_path: this.clashPool.subFilePath, target: this.clashPool.target })
                 });
                 const d = await res.json();
                 this.showToast(d.message, d.status);

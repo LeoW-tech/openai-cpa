@@ -103,7 +103,7 @@ except Exception:
             return False, "clash_manager unavailable"
 
         @staticmethod
-        def patch_and_update(sub_url, target):
+        def patch_and_update(sub_file_path="", sub_url="", target="all"):
             return False, "clash_manager unavailable"
 
     clash_manager = _FallbackClashManager()
@@ -1535,7 +1535,8 @@ class ClashDeployReq(BaseModel):
     count: int
 
 class ClashUpdateReq(BaseModel):
-    sub_url: str
+    sub_file_path: Optional[str] = None
+    sub_url: Optional[str] = None
     target: str = "all"
 
 @router.get("/api/clash/status")
@@ -1552,7 +1553,11 @@ async def post_clash_deploy(req: ClashDeployReq, token: str = Depends(verify_tok
 
 @router.post("/api/clash/update")
 async def post_clash_update(req: ClashUpdateReq, token: str = Depends(verify_token)):
-    success, msg = clash_manager.patch_and_update(req.sub_url, req.target)
+    success, msg = clash_manager.patch_and_update(
+        sub_file_path=req.sub_file_path,
+        sub_url=req.sub_url,
+        target=req.target,
+    )
     return {"status": "success" if success else "error", "message": msg}
 
 
