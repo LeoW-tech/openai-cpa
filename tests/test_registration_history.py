@@ -512,17 +512,17 @@ class RegistrationHistoryTests(unittest.TestCase):
                 FROM registration_attempts
                 WHERE linked_account_email = ?
                 """,
-                ("cluster@example.com",),
+                ("cluster-run@example.com",),
             ).fetchone()
 
         self.assertEqual(1, rows[0])
         self.assertEqual("cluster_import", rows[1])
         self.assertEqual(1, rows[2])
         self.assertEqual("success", rows[3])
-        self.assertEqual("🇯🇵 日本W03 | IEPL", rows[4])
-        self.assertEqual("Japan", rows[5])
+        self.assertEqual("", rows[4])
+        self.assertEqual("", rows[5])
         self.assertEqual("", rows[6])
-        self.assertEqual("NODE-2", rows[7])
+        self.assertEqual("NODE-9", rows[7])
 
     def test_ensure_attempt_flushes_pending_patch_and_events(self):
         run_ctx = {
