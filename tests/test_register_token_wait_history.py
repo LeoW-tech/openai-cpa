@@ -24,7 +24,10 @@ class RegisterTokenWaitHistoryTests(unittest.TestCase):
                     "utils.integrations.hero_sms": types.SimpleNamespace(
                         _try_verify_phone_via_hero_sms=lambda *args, **kwargs: (False, "")
                     ),
-                    "utils.auth_core": types.SimpleNamespace(generate_payload=lambda *args, **kwargs: {}),
+                    "utils.auth_core": types.SimpleNamespace(
+                        generate_payload=lambda *args, **kwargs: {},
+                        init_auth=lambda *args, **kwargs: ("did-demo", "unit-test-agent"),
+                    ),
                     "utils.region_policy": types.SimpleNamespace(is_openai_region_blocked=lambda *args, **kwargs: False),
                 },
             )
