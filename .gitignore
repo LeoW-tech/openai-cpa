@@ -21,6 +21,9 @@ data/
 *副本*.yaml
 config.yaml
 shadowsocks_1897844.yaml
+VPN节点yaml文件/iKuuu_V2.yaml
+VPN节点yaml文件/shadowsocks_1897844.yaml
+VPN节点yaml文件/vv148.no-mad-world.club.yaml
 utils/sentinel.py
 
 data
