@@ -3,6 +3,7 @@ import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+import requests
 
 
 class _FakeResponse:
@@ -91,7 +92,7 @@ class ProxyManagerNodeCacheTests(unittest.TestCase):
     def test_proxy_liveness_accepts_openai_probe_when_trace_unavailable(self):
         proxy_manager = self._reload_proxy_manager()
 
-        with patch.object(
+        with patch.object(proxy_manager, "_get_current_route_state", return_value={}), patch.object(
             proxy_manager.std_requests,
             "get",
             side_effect=[
@@ -109,7 +110,7 @@ class ProxyManagerNodeCacheTests(unittest.TestCase):
     def test_proxy_liveness_accepts_chatgpt_redirect_response(self):
         proxy_manager = self._reload_proxy_manager()
 
-        with patch.object(
+        with patch.object(proxy_manager, "_get_current_route_state", return_value={}), patch.object(
             proxy_manager.std_requests,
             "get",
             side_effect=[
@@ -188,6 +189,37 @@ class ProxyManagerNodeCacheTests(unittest.TestCase):
         }
 
         self.assertEqual("Auto -> 日本W03 | IEPL", proxy_manager._describe_group_now(proxies_payload, "Proxy"))
+
+    def test_classify_request_exception_marks_tls_eof(self):
+        proxy_manager = self._reload_proxy_manager()
+        exc = requests.exceptions.SSLError("HTTPSConnectionPool EOF occurred in violation of protocol (_ssl.c:1006)")
+
+        result = proxy_manager._classify_probe_failure(str(exc), {})
+
+        self.assertEqual("proxy_connect_ok_tls_eof", result["reason"])
+
+    def test_classify_request_exception_marks_timeout(self):
+        proxy_manager = self._reload_proxy_manager()
+        exc = requests.exceptions.ReadTimeout("Read timed out.")
+
+        result = proxy_manager._classify_probe_failure(str(exc), {})
+
+        self.assertEqual("http_timeout", result["reason"])
+
+    def test_classify_probe_failure_marks_current_exit_unavailable_as_dns_failure(self):
+        proxy_manager = self._reload_proxy_manager()
+
+        result = proxy_manager._classify_probe_failure(
+            "all_probes_failed",
+            {
+                "node_name": "爱沙尼亚-EE-1-流量倍率:0.2",
+                "node_alive": False,
+                "node_delay": 0,
+            },
+        )
+
+        self.assertEqual("node_dns_failed", result["reason"])
+        self.assertEqual("爱沙尼亚-EE-1-流量倍率:0.2", result["node_name"])
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import subprocess
 
 import yaml
 
@@ -55,14 +56,17 @@ class FakeContainers:
 
     def run(self, image, **kwargs):
         name = kwargs["name"]
+        ports = kwargs.get("ports") or {}
         container = FakeContainer(
             name=name,
             status="running",
             ports={
-                "7890/tcp": [{"HostPort": str(kwargs["ports"]["7890/tcp"])}],
-                "9090/tcp": [{"HostPort": str(kwargs["ports"]["9090/tcp"])}],
-            },
+                "7890/tcp": [{"HostPort": str(ports["7890/tcp"])}],
+                "9090/tcp": [{"HostPort": str(ports["9090/tcp"])}],
+            } if ports else {},
         )
+        if kwargs.get("network_mode"):
+            container.attrs["HostConfig"]["NetworkMode"] = kwargs["network_mode"]
         self._items[name] = container
         self.run_calls.append({"image": image, "kwargs": kwargs})
         return container
@@ -85,6 +89,7 @@ class ClashManagerTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
+        clash_manager._discover_runtime_dns_servers.cache_clear()
         self.root = Path(self.temp_dir.name)
         self.base_path = self.root / "data" / "mihomo-pool"
         self.base_path.mkdir(parents=True, exist_ok=True)
@@ -127,6 +132,17 @@ class ClashManagerTests(unittest.TestCase):
             "socks-port": 7891,
             "allow-lan": False,
             "external-controller": "127.0.0.1:9000",
+            "dns": {
+                "enable": True,
+                "nameserver": [
+                    "223.5.5.5",
+                    "https://dns.alidns.com/dns-query",
+                ],
+                "fallback": [
+                    "8.8.8.8",
+                    "tls://dns.google:853",
+                ],
+            },
             "proxy-groups": [
                 {"name": "Proxy", "type": "select", "proxies": ["Auto", "日本W03 | IEPL"]},
                 {"name": "Auto", "type": "url-test", "proxies": ["日本W03 | IEPL"]},
@@ -167,8 +183,32 @@ class ClashManagerTests(unittest.TestCase):
         self.assertEqual("0.0.0.0:9090", cfg["external-controller"])
         self.assertEqual("unit-test-secret", cfg["secret"])
 
+    def test_deploy_clash_pool_uses_host_network_on_linux_formal_env(self):
+        client = FakeClient()
+        self._write_managed_subscription(self._sample_subscription())
+
+        with self._patch_paths(), patch.object(clash_manager, "get_client", return_value=client), patch.object(
+            clash_manager,
+            "_use_host_network_pool",
+            return_value=True,
+        ):
+            success, message = clash_manager.deploy_clash_pool(1)
+
+        self.assertTrue(success, message)
+        first_call = client.containers.run_calls[0]["kwargs"]
+        self.assertEqual("host", first_call["network_mode"])
+        self.assertNotIn("ports", first_call)
+        cfg = yaml.safe_load((self.base_path / "clash_1" / "config.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(41001, cfg["port"])
+        self.assertEqual(43001, cfg["socks-port"])
+        self.assertEqual("0.0.0.0:42001", cfg["external-controller"])
+
     def test_apply_runtime_patch_preserves_port_and_socks_port(self):
-        with self._patch_paths():
+        with self._patch_paths(), patch.object(
+            clash_manager,
+            "_discover_runtime_dns_servers",
+            return_value=["192.168.31.1", "100.100.100.100"],
+        ):
             patched = clash_manager._apply_runtime_patch(self._sample_subscription())
 
         self.assertEqual(7890, patched["port"])
@@ -177,6 +217,136 @@ class ClashManagerTests(unittest.TestCase):
         self.assertTrue(patched["allow-lan"])
         self.assertEqual("0.0.0.0:9090", patched["external-controller"])
         self.assertEqual("Proxy", patched["proxy-groups"][0]["name"])
+        self.assertEqual(
+            ["192.168.31.1", "100.100.100.100"],
+            patched["dns"]["nameserver"],
+        )
+        self.assertEqual(
+            ["192.168.31.1", "100.100.100.100"],
+            patched["dns"]["fallback"],
+        )
+        self.assertEqual(
+            ["192.168.31.1", "100.100.100.100"],
+            patched["default-nameserver"],
+        )
+        self.assertEqual(
+            ["192.168.31.1", "100.100.100.100"],
+            patched["proxy-server-nameserver"],
+        )
+        self.assertEqual(["MATCH,DIRECT"], patched["rules"][-1:])
+
+    def test_apply_runtime_patch_uses_host_network_ports_and_stub_dns_when_enabled(self):
+        with self._patch_paths(), patch.object(
+            clash_manager,
+            "_use_host_network_pool",
+            return_value=True,
+        ):
+            patched = clash_manager._apply_runtime_patch(self._sample_subscription(), index=3)
+
+        self.assertEqual(41003, patched["port"])
+        self.assertEqual(43003, patched["socks-port"])
+        self.assertEqual("0.0.0.0:42003", patched["external-controller"])
+        self.assertEqual(["127.0.0.53"], patched["dns"]["nameserver"])
+        self.assertEqual(["127.0.0.53"], patched["default-nameserver"])
+        self.assertEqual(["127.0.0.53"], patched["proxy-server-nameserver"])
+        self.assertNotIn("mixed-port", patched)
+
+    def test_apply_runtime_patch_keeps_source_dns_when_runtime_dns_missing(self):
+        with self._patch_paths(), patch.object(
+            clash_manager,
+            "_discover_runtime_dns_servers",
+            return_value=[],
+        ):
+            patched = clash_manager._apply_runtime_patch(self._sample_subscription())
+
+        self.assertEqual(
+            self._sample_subscription()["dns"]["nameserver"],
+            patched["dns"]["nameserver"],
+        )
+        self.assertEqual(
+            self._sample_subscription()["dns"]["fallback"],
+            patched["dns"]["fallback"],
+        )
+        self.assertNotIn("default-nameserver", patched)
+        self.assertNotIn("proxy-server-nameserver", patched)
+
+    def test_parse_resolvectl_dns_servers_prefers_ipv4_and_filters_loopback(self):
+        text = """
+Global
+         Protocols: -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+  Current DNS Server: 192.168.31.1
+         DNS Servers: 192.168.31.1 2408:4001:801::200e 127.0.0.53
+Link 2 (eth0)
+  Current DNS Server: 100.100.100.100
+         DNS Servers: 100.100.100.100
+"""
+        self.assertEqual(
+            ["192.168.31.1", "100.100.100.100"],
+            clash_manager._parse_resolvectl_dns_servers(text),
+        )
+
+    def test_discover_runtime_dns_servers_falls_back_to_run_systemd_resolv(self):
+        fallback_resolv = self.root / "run-systemd-resolv.conf"
+        fallback_resolv.write_text(
+            "nameserver 127.0.0.53\nnameserver 192.168.31.1\nnameserver 100.100.100.100\n",
+            encoding="utf-8",
+        )
+        real_isfile = clash_manager.os.path.isfile
+        real_open = open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/run/systemd/resolve/resolv.conf":
+                return real_open(fallback_resolv, *args, **kwargs)
+            return real_open(path, *args, **kwargs)
+
+        with patch.object(
+            clash_manager.subprocess,
+            "run",
+            side_effect=subprocess.CalledProcessError(1, ["resolvectl"]),
+        ), patch.object(
+            clash_manager.os.path,
+            "isfile",
+            side_effect=lambda path: True if path == "/run/systemd/resolve/resolv.conf" else real_isfile(path),
+        ), patch("builtins.open", side_effect=fake_open):
+            self.assertEqual(
+                ["192.168.31.1", "100.100.100.100"],
+                clash_manager._discover_runtime_dns_servers(),
+            )
+
+    def test_discover_runtime_dns_servers_prefers_snapshot_before_stub_resolv_conf(self):
+        snapshot_path = self.base_path / "runtime-dns-servers.yaml"
+        snapshot_path.write_text(
+            yaml.safe_dump({"dns_servers": ["192.168.31.1", "100.100.100.100"]}, allow_unicode=True),
+            encoding="utf-8",
+        )
+        fallback_resolv = self.root / "etc-resolv.conf"
+        fallback_resolv.write_text("nameserver 127.0.0.53\n", encoding="utf-8")
+        real_isfile = clash_manager.os.path.isfile
+        real_open = open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/etc/resolv.conf":
+                return real_open(fallback_resolv, *args, **kwargs)
+            return real_open(path, *args, **kwargs)
+
+        clash_manager._discover_runtime_dns_servers.cache_clear()
+        with self._patch_paths(), patch.object(
+            clash_manager.subprocess,
+            "run",
+            side_effect=subprocess.CalledProcessError(1, ["resolvectl"]),
+        ), patch.object(
+            clash_manager.os.path,
+            "isfile",
+            side_effect=lambda path: (
+                False
+                if path == "/run/systemd/resolve/resolv.conf"
+                else True if path == "/etc/resolv.conf" else real_isfile(path)
+            ),
+        ), patch("builtins.open", side_effect=fake_open):
+            self.assertEqual(
+                ["192.168.31.1", "100.100.100.100"],
+                clash_manager._discover_runtime_dns_servers(),
+            )
 
     def test_deploy_clash_pool_copies_existing_subscription_template_to_new_instances(self):
         client = FakeClient([FakeContainer("clash_1")])

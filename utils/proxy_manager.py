@@ -224,6 +224,13 @@ def _filter_dns_resolvable_nodes(proxies_data, nodes, display_name):
     return filtered_nodes, skipped
 
 
+def _find_proxy_group_name(proxies_data):
+    for key in proxies_data.keys():
+        if PROXY_GROUP_NAME in key and isinstance(proxies_data[key], dict) and 'all' in proxies_data[key]:
+            return key
+    return None
+
+
 def _describe_group_now(proxies_data, group_name: str) -> str:
     group = proxies_data.get(group_name, {})
     current = str(group.get("now") or "").strip()
@@ -245,6 +252,14 @@ def _build_probe_result(ok: bool, reason: str, **extra):
     return result
 
 
+def _merge_route_state(result: dict, route_state: dict | None):
+    if not route_state:
+        return result
+    merged = dict(result or {})
+    merged.update(route_state)
+    return merged
+
+
 def _is_probe_success_status(status_code: int) -> bool:
     return 200 <= int(status_code or 0) < 500 and int(status_code) != 407
 
@@ -256,10 +271,131 @@ def _extract_loc_from_trace(text: str) -> str:
     return ""
 
 
+def _extract_last_delay(proxy_item: dict):
+    history = (proxy_item or {}).get("history") or []
+    if not history:
+        return None
+    try:
+        return history[-1].get("delay")
+    except Exception:
+        return None
+
+
+def _get_current_route_state(proxy_url=None):
+    current_api_url = get_api_url_for_proxy(proxy_url)
+    headers = {"Authorization": f"Bearer {CLASH_SECRET}"} if CLASH_SECRET else {}
+
+    try:
+        response = std_requests.get(f"{current_api_url}/proxies", headers=headers, timeout=5)
+        if response.status_code != 200:
+            return {"api_ok": False, "api_status": response.status_code}
+
+        proxies_data = response.json().get("proxies", {})
+        actual_group_name = _find_proxy_group_name(proxies_data)
+        if not actual_group_name:
+            return {"api_ok": True, "group_found": False}
+
+        group_data = proxies_data.get(actual_group_name, {})
+        group_now = str(group_data.get("now") or "").strip()
+        auto_now = str((proxies_data.get("Auto") or {}).get("now") or "").strip()
+        node_name = auto_now if group_now == "Auto" and auto_now else group_now
+        node_data = proxies_data.get(node_name, {}) if node_name else {}
+
+        return {
+            "api_ok": True,
+            "group_found": True,
+            "group_name": actual_group_name,
+            "group_now": group_now,
+            "auto_now": auto_now,
+            "node_name": node_name,
+            "node_alive": node_data.get("alive"),
+            "node_delay": _extract_last_delay(node_data),
+        }
+    except Exception as exc:
+        return {"api_ok": False, "api_error": str(exc)}
+
+
+def _classify_probe_failure(detail: str, route_state: dict | None, probe_name: str = ""):
+    normalized_detail = str(detail or "").strip()
+    lowered = normalized_detail.lower()
+
+    if route_state and route_state.get("node_alive") is False and route_state.get("node_delay") in {0, None}:
+        return _merge_route_state(
+            _build_probe_result(
+                False,
+                "node_dns_failed",
+                probe=probe_name,
+                detail=normalized_detail or "current_exit_unavailable",
+            ),
+            route_state,
+        )
+
+    if any(
+        token in lowered
+        for token in (
+            "dns resolve failed",
+            "couldn't find ip",
+            "could not resolve",
+            "nameresolutionerror",
+            "temporary failure in name resolution",
+            "name or service not known",
+            "no address associated with hostname",
+        )
+    ):
+        reason = "node_dns_failed"
+    elif any(
+        token in lowered
+        for token in (
+            "unexpected eof",
+            "unexpected eof while reading",
+            "ssleoferror",
+            "eof occurred in violation of protocol",
+        )
+    ):
+        reason = "proxy_connect_ok_tls_eof"
+    elif any(
+        token in lowered
+        for token in (
+            "timed out",
+            "readtimeout",
+            "connecttimeout",
+            "read timed out",
+        )
+    ):
+        reason = "http_timeout"
+    else:
+        reason = "probe_failed"
+
+    return _merge_route_state(
+        _build_probe_result(
+            False,
+            reason,
+            probe=probe_name,
+            detail=normalized_detail or "probe_failed",
+        ),
+        route_state,
+    )
+
+
+def _build_unexpected_status_result(status_code: int, route_state: dict | None, probe_name: str):
+    return _merge_route_state(
+        _build_probe_result(
+            False,
+            "unexpected_status",
+            probe=probe_name,
+            status_code=int(status_code or 0),
+            detail=f"http_{int(status_code or 0)}",
+        ),
+        route_state,
+    )
+
+
 def _probe_proxy_liveness(proxy_url=None):
     raw_url = proxy_url if proxy_url else LOCAL_PROXY_URL
     target_proxy = format_docker_url(raw_url)
     proxies = {"http": target_proxy, "https": target_proxy}
+    route_state = _get_current_route_state(proxy_url)
+    last_failure = None
 
     for probe in LIVENESS_PROBES:
         try:
@@ -270,9 +406,11 @@ def _probe_proxy_liveness(proxy_url=None):
                 allow_redirects=False,
             )
         except Exception as exc:
+            last_failure = _classify_probe_failure(str(exc), route_state, probe["name"])
             continue
 
         if not _is_probe_success_status(response.status_code):
+            last_failure = _build_unexpected_status_result(response.status_code, route_state, probe["name"])
             continue
 
         latency = None
@@ -293,42 +431,70 @@ def _probe_proxy_liveness(proxy_url=None):
             if trace_response.status_code in TRACE_PROBE["success_codes"]:
                 loc = _extract_loc_from_trace(trace_response.text)
                 if loc and is_openai_region_blocked(loc):
-                    return _build_probe_result(
-                        False,
-                        "region_blocked",
-                        probe=TRACE_PROBE["name"],
-                        loc=loc,
-                        latency=latency,
+                    return _merge_route_state(
+                        _build_probe_result(
+                            False,
+                            "region_blocked",
+                            probe=TRACE_PROBE["name"],
+                            loc=loc,
+                            latency=latency,
+                        ),
+                        route_state,
                     )
                 if loc:
-                    return _build_probe_result(
-                        True,
-                        "ok",
-                        probe=TRACE_PROBE["name"],
-                        loc=loc,
-                        latency=latency,
+                    return _merge_route_state(
+                        _build_probe_result(
+                            True,
+                            "ok",
+                            probe=TRACE_PROBE["name"],
+                            loc=loc,
+                            latency=latency,
+                        ),
+                        route_state,
                     )
         except Exception as exc:
             trace_error = str(exc)
 
-        return _build_probe_result(
-            True,
-            "region_unknown",
-            probe=probe["name"],
-            latency=latency,
-            detail=trace_error or "trace_unavailable",
+        return _merge_route_state(
+            _build_probe_result(
+                True,
+                "region_unknown",
+                probe=probe["name"],
+                latency=latency,
+                detail=trace_error or "trace_unavailable",
+            ),
+            route_state,
         )
 
-    return _build_probe_result(False, "probe_failed", detail="all_probes_failed")
+    if last_failure:
+        return last_failure
+
+    return _merge_route_state(
+        _build_probe_result(False, "probe_failed", detail="all_probes_failed"),
+        route_state,
+    )
 
 
 def _log_liveness_result(display_name: str, result: dict) -> None:
     reason = result.get("reason")
+    node_name = str(result.get("node_name") or "").strip()
+    group_now = str(result.get("group_now") or "").strip()
+    auto_now = str(result.get("auto_now") or "").strip()
+    route_note = ""
+    if group_now == "Auto" and auto_now:
+        route_note = f"，当前出口: Auto -> {clean_for_log(auto_now)}"
+    elif node_name:
+        route_note = f"，当前出口: {clean_for_log(node_name)}"
+
+    route_unavailable_note = ""
+    if result.get("node_alive") is False and result.get("node_delay") in {0, None}:
+        route_unavailable_note = "，实例当前出口不可用(alive=false, delay=0)"
+
     if reason == "ok":
         loc = result.get("loc", "UNKNOWN")
         latency = result.get("latency")
         latency_text = f"{latency:.2f}s" if isinstance(latency, (int, float)) else "未知"
-        print(f"[{ts()}] [代理测活] {display_name} 成功！地区 ({loc})，延迟: {latency_text}")
+        print(f"[{ts()}] [代理测活] {display_name} 成功！地区 ({loc})，延迟: {latency_text}{route_note}")
         return
 
     if reason == "region_unknown":
@@ -336,16 +502,48 @@ def _log_liveness_result(display_name: str, result: dict) -> None:
         latency_text = f"{latency:.2f}s" if isinstance(latency, (int, float)) else "未知"
         print(
             f"[{ts()}] [代理测活] {display_name} 代理可通但地区未知，"
-            f"探针: {result.get('probe', 'UNKNOWN')}，延迟: {latency_text}"
+            f"探针: {result.get('probe', 'UNKNOWN')}，延迟: {latency_text}{route_note}"
         )
         return
 
     if reason == "region_blocked":
-        print(f"[{ts()}] [代理测活] {display_name} 地区受限 ({result.get('loc', 'UNKNOWN')})，弃用！")
+        print(f"[{ts()}] [代理测活] {display_name} 地区受限 ({result.get('loc', 'UNKNOWN')})，弃用！{route_note}")
+        return
+
+    if reason == "node_dns_failed":
+        print(
+            f"[{ts()}] [代理测活] {display_name} 节点域名解析失败，"
+            f"探针: {result.get('probe', 'UNKNOWN')}，细节: {result.get('detail', 'unknown')}"
+            f"{route_note}{route_unavailable_note}"
+        )
+        return
+
+    if reason == "proxy_connect_ok_tls_eof":
+        print(
+            f"[{ts()}] [代理测活] {display_name} 代理 CONNECT 已建立但 TLS EOF，"
+            f"探针: {result.get('probe', 'UNKNOWN')}，细节: {result.get('detail', 'unknown')}"
+            f"{route_note}{route_unavailable_note}"
+        )
+        return
+
+    if reason == "http_timeout":
+        print(
+            f"[{ts()}] [代理测活] {display_name} HTTP 探针超时，"
+            f"探针: {result.get('probe', 'UNKNOWN')}，细节: {result.get('detail', 'unknown')}"
+            f"{route_note}{route_unavailable_note}"
+        )
+        return
+
+    if reason == "unexpected_status":
+        print(
+            f"[{ts()}] [代理测活] {display_name} 探针返回异常状态 "
+            f"(HTTP {result.get('status_code', 'UNKNOWN')})"
+            f"{route_note}{route_unavailable_note}"
+        )
         return
 
     detail = result.get("detail", "unknown")
-    print(f"[{ts()}] [代理测活] {display_name} 探针目标失败 ({detail})。")
+    print(f"[{ts()}] [代理测活] {display_name} 探针目标失败 ({detail})。{route_note}{route_unavailable_note}")
 
 def test_proxy_liveness(proxy_url=None):
     """测试当前代理是否可用 (脱敏)"""
@@ -395,11 +593,7 @@ def _do_smart_switch(proxy_url=None):
             
         proxies_data = resp.json().get('proxies', {})
 
-        actual_group_name = None
-        for key in proxies_data.keys():
-            if PROXY_GROUP_NAME in key and isinstance(proxies_data[key], dict) and 'all' in proxies_data[key]:
-                actual_group_name = key
-                break
+        actual_group_name = _find_proxy_group_name(proxies_data)
                 
         if not actual_group_name:
             print(f"[{ts()}] [ERROR] {display_name} 找不到策略组关键词 '{PROXY_GROUP_NAME}'")
