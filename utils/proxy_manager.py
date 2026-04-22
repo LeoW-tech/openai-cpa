@@ -17,7 +17,7 @@ LOCAL_PROXY_URL = ""
 ENABLE_NODE_SWITCH = False
 POOL_MODE = False
 FASTEST_MODE = False
-PROXY_GROUP_NAME = "节点选择"
+PROXY_GROUP_NAME = "Proxy"
 CLASH_SECRET = ""
 NODE_BLACKLIST = []
 _IS_IN_DOCKER = os.path.exists('/.dockerenv')
@@ -34,16 +34,9 @@ BASE_DIR = os.path.dirname(CURRENT_DIR)
 DOCKER_LOOPBACK_REWRITE_DISABLE_ENV = "OPENAI_CPA_DISABLE_DOCKER_LOOPBACK_REWRITE"
 LIVENESS_PROBE_TIMEOUT = 5
 LIVENESS_PROBES = (
-    {
-        "name": "HTTP 204",
-        "url": "http://www.gstatic.com/generate_204",
-        "success_codes": {200, 204},
-    },
-    {
-        "name": "HTTPS 204",
-        "url": "https://www.google.com/generate_204",
-        "success_codes": {200, 204},
-    },
+    {"name": "OpenAI", "url": "https://openai.com"},
+    {"name": "ChatGPT", "url": "https://chatgpt.com"},
+    {"name": "Cloudflare", "url": "https://cloudflare.com"},
 )
 TRACE_PROBE = {
     "name": "Cloudflare Trace",
@@ -86,7 +79,7 @@ def reload_proxy_config():
     CLASH_API_URL = format_docker_url(clash_conf.get("api_url", "http://127.0.0.1:9090"))
     LOCAL_PROXY_URL = format_docker_url(clash_conf.get("test_proxy_url", "http://127.0.0.1:7890"))
     
-    PROXY_GROUP_NAME = clash_conf.get("group_name", "节点选择")
+    PROXY_GROUP_NAME = clash_conf.get("group_name", "Proxy")
     CLASH_SECRET = clash_conf.get("secret", "")
     NODE_BLACKLIST = clash_conf.get("blacklist", ["台", "TW", "中国", "CN"])
    
@@ -231,10 +224,29 @@ def _filter_dns_resolvable_nodes(proxies_data, nodes, display_name):
     return filtered_nodes, skipped
 
 
+def _describe_group_now(proxies_data, group_name: str) -> str:
+    group = proxies_data.get(group_name, {})
+    current = str(group.get("now") or "").strip()
+    if not current:
+        return "UNKNOWN"
+    if current != "Auto":
+        return clean_for_log(current)
+
+    auto_group = proxies_data.get("Auto", {})
+    auto_now = str(auto_group.get("now") or "").strip()
+    if auto_now:
+        return f"Auto -> {clean_for_log(auto_now)}"
+    return "Auto"
+
+
 def _build_probe_result(ok: bool, reason: str, **extra):
     result = {"ok": ok, "reason": reason}
     result.update(extra)
     return result
+
+
+def _is_probe_success_status(status_code: int) -> bool:
+    return 200 <= int(status_code or 0) < 500 and int(status_code) != 407
 
 
 def _extract_loc_from_trace(text: str) -> str:
@@ -260,7 +272,7 @@ def _probe_proxy_liveness(proxy_url=None):
         except Exception as exc:
             continue
 
-        if response.status_code not in probe["success_codes"]:
+        if not _is_probe_success_status(response.status_code):
             continue
 
         latency = None
@@ -397,6 +409,11 @@ def _do_smart_switch(proxy_url=None):
         group_data = proxies_data[actual_group_name]
         all_nodes = group_data.get('all', [])
         current_node = group_data.get('now')
+
+        print(
+            f"[{ts()}] [代理池] {display_name} 当前策略组 [{clean_for_log(actual_group_name)}] "
+            f"出口: {_describe_group_now(proxies_data, actual_group_name)}"
+        )
         
         valid_nodes = [
             n for n in all_nodes
@@ -405,7 +422,7 @@ def _do_smart_switch(proxy_url=None):
         ]
         
         if not valid_nodes:
-            print(f"[{ts()}] [ERROR] {display_name} 过滤后无可用节点，请检查黑名单。")
+            print(f"[{ts()}] [ERROR] {display_name} 过滤后无可用节点，请检查黑名单或策略组。")
             return False
 
         switchable_nodes = _pick_switchable_nodes(valid_nodes, current_node)
@@ -463,6 +480,10 @@ def _do_smart_switch(proxy_url=None):
                             headers=headers, json={"name": best_node}, timeout=5
                         )
                         if switch_resp.status_code == 204:
+                            print(
+                                f"[{ts()}] [代理池] {display_name} 已切换 [{clean_for_log(actual_group_name)}] -> "
+                                f"[{clean_for_log(best_node)}]"
+                            )
                             time.sleep(1)
                             if test_proxy_liveness(proxy_url):
                                 _record_success_node(proxy_url, best_node)
@@ -489,6 +510,10 @@ def _do_smart_switch(proxy_url=None):
             )
             
             if switch_resp.status_code == 204:
+                print(
+                    f"[{ts()}] [代理池] {display_name} 已切换 [{clean_for_log(actual_group_name)}] -> "
+                    f"[{clean_for_log(selected_node)}]"
+                )
                 time.sleep(1.5)
                 if test_proxy_liveness(proxy_url):
                     _record_success_node(proxy_url, selected_node)

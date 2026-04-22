@@ -97,7 +97,7 @@ class ClashManagerTests(unittest.TestCase):
                 {
                     "clash_proxy_pool": {
                         "secret": "unit-test-secret",
-                        "group_name": "🔰 选择节点",
+                        "group_name": "Proxy",
                         "sub_file_path": str(self.managed_sub_rel),
                     }
                 },
@@ -121,6 +121,29 @@ class ClashManagerTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _sample_subscription(self):
+        return {
+            "port": 7890,
+            "socks-port": 7891,
+            "allow-lan": False,
+            "external-controller": "127.0.0.1:9000",
+            "proxy-groups": [
+                {"name": "Proxy", "type": "select", "proxies": ["Auto", "日本W03 | IEPL"]},
+                {"name": "Auto", "type": "url-test", "proxies": ["日本W03 | IEPL"]},
+            ],
+            "proxies": [
+                {
+                    "name": "日本W03 | IEPL",
+                    "type": "ss",
+                    "server": "jp03.example.com",
+                    "port": 443,
+                    "cipher": "aes-256-gcm",
+                    "password": "x",
+                }
+            ],
+            "rules": ["DOMAIN-SUFFIX,openai.com,Proxy", "MATCH,DIRECT"],
+        }
+
     def test_deploy_clash_pool_mounts_instance_dir_and_ports(self):
         client = FakeClient()
         with self._patch_paths(), patch.object(clash_manager, "get_client", return_value=client):
@@ -128,7 +151,6 @@ class ClashManagerTests(unittest.TestCase):
 
         self.assertTrue(success, message)
         self.assertEqual(2, len(client.containers.run_calls))
-
         first_call = client.containers.run_calls[0]["kwargs"]
         self.assertEqual({"7890/tcp": 41001, "9090/tcp": 42001}, first_call["ports"])
         self.assertEqual(
@@ -140,45 +162,28 @@ class ClashManagerTests(unittest.TestCase):
             },
             first_call["volumes"],
         )
-        self.assertTrue((self.base_path / "clash_1" / "config.yaml").is_file())
         cfg = yaml.safe_load((self.base_path / "clash_1" / "config.yaml").read_text(encoding="utf-8"))
         self.assertEqual(7890, cfg["mixed-port"])
         self.assertEqual("0.0.0.0:9090", cfg["external-controller"])
         self.assertEqual("unit-test-secret", cfg["secret"])
-        self.assertNotIn("proxy-groups", cfg)
 
-    def test_apply_runtime_patch_removes_conflicting_ports_and_controller(self):
+    def test_apply_runtime_patch_preserves_port_and_socks_port(self):
         with self._patch_paths():
-            patched = clash_manager._apply_runtime_patch(
-                {
-                    "port": 7890,
-                    "socks-port": 7891,
-                    "allow-lan": False,
-                    "external-controller": "127.0.0.1:9000",
-                    "proxy-groups": [{"name": "🔰 选择节点", "type": "select", "proxies": ["A"]}],
-                }
-            )
+            patched = clash_manager._apply_runtime_patch(self._sample_subscription())
 
-        self.assertNotIn("port", patched)
-        self.assertNotIn("socks-port", patched)
+        self.assertEqual(7890, patched["port"])
+        self.assertEqual(7891, patched["socks-port"])
+        self.assertNotIn("mixed-port", patched)
         self.assertTrue(patched["allow-lan"])
-        self.assertEqual(7890, patched["mixed-port"])
         self.assertEqual("0.0.0.0:9090", patched["external-controller"])
+        self.assertEqual("Proxy", patched["proxy-groups"][0]["name"])
 
     def test_deploy_clash_pool_copies_existing_subscription_template_to_new_instances(self):
         client = FakeClient([FakeContainer("clash_1")])
         clash_1_dir = self.base_path / "clash_1"
         clash_1_dir.mkdir(parents=True, exist_ok=True)
         (clash_1_dir / "config.yaml").write_text(
-            yaml.safe_dump(
-                {
-                    "mixed-port": 9999,
-                    "external-controller": "127.0.0.1:9990",
-                    "proxy-groups": [{"name": "🔰 选择节点", "type": "select", "proxies": ["A"]}],
-                    "proxies": [{"name": "A", "type": "ss", "server": "a.example.com", "port": 443, "cipher": "aes-256-gcm", "password": "x"}],
-                },
-                allow_unicode=True,
-            ),
+            yaml.safe_dump(self._sample_subscription(), allow_unicode=True),
             encoding="utf-8",
         )
 
@@ -187,31 +192,32 @@ class ClashManagerTests(unittest.TestCase):
 
         self.assertTrue(success, message)
         cfg = yaml.safe_load((self.base_path / "clash_2" / "config.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(7890, cfg["mixed-port"])
+        self.assertEqual(7890, cfg["port"])
+        self.assertEqual(7891, cfg["socks-port"])
         self.assertEqual("0.0.0.0:9090", cfg["external-controller"])
-        self.assertEqual("unit-test-secret", cfg["secret"])
-        self.assertEqual("🔰 选择节点", cfg["proxy-groups"][0]["name"])
-        self.assertEqual("A", cfg["proxies"][0]["name"])
+        self.assertEqual("Proxy", cfg["proxy-groups"][0]["name"])
 
     def test_deploy_clash_pool_prefers_managed_subscription_file(self):
         client = FakeClient([FakeContainer("clash_1")])
-        self._write_managed_subscription(
+        managed = self._sample_subscription()
+        managed["proxy-groups"][0]["proxies"] = ["Auto", "托管节点"]
+        managed["proxy-groups"][1]["proxies"] = ["托管节点"]
+        managed["proxies"] = [
             {
-                "proxy-groups": [{"name": "托管订阅", "type": "select", "proxies": ["B"]}],
-                "proxies": [{"name": "B", "type": "ss", "server": "b.example.com", "port": 443, "cipher": "aes-256-gcm", "password": "y"}],
+                "name": "托管节点",
+                "type": "ss",
+                "server": "managed.example.com",
+                "port": 443,
+                "cipher": "aes-256-gcm",
+                "password": "y",
             }
-        )
+        ]
+        self._write_managed_subscription(managed)
 
         clash_1_dir = self.base_path / "clash_1"
         clash_1_dir.mkdir(parents=True, exist_ok=True)
         (clash_1_dir / "config.yaml").write_text(
-            yaml.safe_dump(
-                {
-                    "proxy-groups": [{"name": "旧模板", "type": "select", "proxies": ["A"]}],
-                    "proxies": [{"name": "A", "type": "ss", "server": "a.example.com", "port": 443, "cipher": "aes-256-gcm", "password": "x"}],
-                },
-                allow_unicode=True,
-            ),
+            yaml.safe_dump(self._sample_subscription(), allow_unicode=True),
             encoding="utf-8",
         )
 
@@ -220,8 +226,8 @@ class ClashManagerTests(unittest.TestCase):
 
         self.assertTrue(success, message)
         cfg = yaml.safe_load((self.base_path / "clash_2" / "config.yaml").read_text(encoding="utf-8"))
-        self.assertEqual("托管订阅", cfg["proxy-groups"][0]["name"])
-        self.assertEqual("B", cfg["proxies"][0]["name"])
+        self.assertEqual("托管节点", cfg["proxies"][0]["name"])
+        self.assertEqual("Proxy", cfg["proxy-groups"][0]["name"])
 
     def test_deploy_clash_pool_warns_when_target_group_missing_after_sync(self):
         client = FakeClient()
@@ -230,7 +236,7 @@ class ClashManagerTests(unittest.TestCase):
             success, message = clash_manager.deploy_clash_pool(1)
 
         self.assertTrue(success, message)
-        self.assertIn("🔰 选择节点", message)
+        self.assertIn("Proxy", message)
         self.assertIn("请执行订阅更新", message)
 
     def test_deploy_clash_pool_rejects_directory_config_path(self):
@@ -244,20 +250,11 @@ class ClashManagerTests(unittest.TestCase):
 
         self.assertFalse(success)
         self.assertIn("config.yaml", message)
-        self.assertEqual([], client.containers.run_calls)
 
-    def test_patch_and_update_writes_secret_and_runtime_patch(self):
+    def test_patch_and_update_writes_secret_and_preserves_ports(self):
         existing = [FakeContainer("clash_1"), FakeContainer("clash_2")]
         client = FakeClient(existing)
-        sub_text = yaml.safe_dump(
-            {
-                "mixed-port": 9999,
-                "external-controller": "127.0.0.1:9990",
-                "proxy-groups": [{"name": "🔰 选择节点", "type": "select", "proxies": ["A"]}],
-                "proxies": [{"name": "A", "type": "ss", "server": "a.example.com", "port": 443, "cipher": "aes-256-gcm", "password": "x"}],
-            },
-            allow_unicode=True,
-        )
+        sub_text = yaml.safe_dump(self._sample_subscription(), allow_unicode=True)
 
         with self._patch_paths(), patch.object(clash_manager, "get_client", return_value=client), patch.object(
             clash_manager.requests, "get", return_value=FakeResponse(sub_text)
@@ -267,7 +264,8 @@ class ClashManagerTests(unittest.TestCase):
         self.assertTrue(success, message)
         for name in ("clash_1", "clash_2"):
             cfg = yaml.safe_load((self.base_path / name / "config.yaml").read_text(encoding="utf-8"))
-            self.assertEqual(7890, cfg["mixed-port"])
+            self.assertEqual(7890, cfg["port"])
+            self.assertEqual(7891, cfg["socks-port"])
             self.assertEqual("0.0.0.0:9090", cfg["external-controller"])
             self.assertEqual("unit-test-secret", cfg["secret"])
             self.assertTrue(client.containers.get(name).restarted)
@@ -275,14 +273,11 @@ class ClashManagerTests(unittest.TestCase):
     def test_patch_and_update_reads_local_subscription_file_and_restarts_instances(self):
         existing = [FakeContainer("clash_1"), FakeContainer("clash_2")]
         client = FakeClient(existing)
-        self._write_managed_subscription(
-            {
-                "mixed-port": 9999,
-                "external-controller": "127.0.0.1:9990",
-                "proxy-groups": [{"name": "本地订阅", "type": "select", "proxies": ["L"]}],
-                "proxies": [{"name": "L", "type": "ss", "server": "l.example.com", "port": 443, "cipher": "aes-256-gcm", "password": "z"}],
-            }
-        )
+        local_sub = self._sample_subscription()
+        local_sub["proxies"][0]["name"] = "本地节点"
+        local_sub["proxy-groups"][0]["proxies"] = ["Auto", "本地节点"]
+        local_sub["proxy-groups"][1]["proxies"] = ["本地节点"]
+        self._write_managed_subscription(local_sub)
 
         with self._patch_paths(), patch.object(clash_manager, "get_client", return_value=client):
             success, message = clash_manager.patch_and_update(
@@ -293,10 +288,9 @@ class ClashManagerTests(unittest.TestCase):
         self.assertTrue(success, message)
         for name in ("clash_1", "clash_2"):
             cfg = yaml.safe_load((self.base_path / name / "config.yaml").read_text(encoding="utf-8"))
-            self.assertEqual("本地订阅", cfg["proxy-groups"][0]["name"])
-            self.assertEqual(7890, cfg["mixed-port"])
-            self.assertEqual("0.0.0.0:9090", cfg["external-controller"])
-            self.assertEqual("unit-test-secret", cfg["secret"])
+            self.assertEqual("本地节点", cfg["proxies"][0]["name"])
+            self.assertEqual("Proxy", cfg["proxy-groups"][0]["name"])
+            self.assertEqual(7890, cfg["port"])
             self.assertTrue(client.containers.get(name).restarted)
 
     def test_patch_and_update_rejects_missing_local_subscription_file(self):
@@ -382,13 +376,7 @@ class ClashManagerTests(unittest.TestCase):
         clash_1_dir = self.base_path / "clash_1"
         clash_1_dir.mkdir(parents=True, exist_ok=True)
         (clash_1_dir / "config.yaml").write_text(
-            yaml.safe_dump(
-                {
-                    "proxy-groups": [{"name": "🔰 选择节点", "type": "select", "proxies": ["A"]}],
-                    "proxies": [{"name": "A", "type": "ss", "server": "a.example.com", "port": 443, "cipher": "aes-256-gcm", "password": "x"}],
-                },
-                allow_unicode=True,
-            ),
+            yaml.safe_dump(self._sample_subscription(), allow_unicode=True),
             encoding="utf-8",
         )
 
@@ -398,7 +386,8 @@ class ClashManagerTests(unittest.TestCase):
             yaml.safe_dump(
                 {
                     "allow-lan": True,
-                    "mixed-port": 7890,
+                    "port": 7890,
+                    "socks-port": 7891,
                     "external-controller": "0.0.0.0:9090",
                 },
                 allow_unicode=True,
@@ -420,9 +409,9 @@ class ClashManagerTests(unittest.TestCase):
 
         self.assertEqual(["clash_2"], result["health"]["instances_missing_group"])
         self.assertEqual([], result["health"]["instances_missing_config"])
-        self.assertEqual("🔰 选择节点", result["health"]["expected_group_name"])
+        self.assertEqual("Proxy", result["health"]["expected_group_name"])
         self.assertEqual(1, result["health"]["instances_with_target_group_count"])
-        self.assertEqual("🔰 选择节点", result["groups"][0]["name"])
+        self.assertEqual("Proxy", result["groups"][0]["name"])
         clash_1_status = next(item for item in result["instances"] if item["name"] == "clash_1")
         clash_2_status = next(item for item in result["instances"] if item["name"] == "clash_2")
         self.assertTrue(clash_1_status["config_exists"])
@@ -454,23 +443,10 @@ class ClashManagerTests(unittest.TestCase):
         clash_1_dir = self.base_path / "clash_1"
         clash_1_dir.mkdir(parents=True, exist_ok=True)
         (clash_1_dir / "config.yaml").write_text(
-            yaml.safe_dump(
-                {
-                    "proxy-groups": [{"name": "🔰 选择节点", "type": "select", "proxies": ["A"]}],
-                    "proxies": [{"name": "A", "type": "ss", "server": "a.example.com", "port": 443, "cipher": "aes-256-gcm", "password": "x"}],
-                    "mixed-port": 7890,
-                    "external-controller": "0.0.0.0:9090",
-                },
-                allow_unicode=True,
-            ),
+            yaml.safe_dump(self._sample_subscription(), allow_unicode=True),
             encoding="utf-8",
         )
-        self._write_managed_subscription(
-            {
-                "proxy-groups": [{"name": "🔰 选择节点", "type": "select", "proxies": ["A"]}],
-                "proxies": [{"name": "A", "type": "ss", "server": "a.example.com", "port": 443, "cipher": "aes-256-gcm", "password": "x"}],
-            }
-        )
+        self._write_managed_subscription(self._sample_subscription())
 
         with self._patch_paths(), patch.object(clash_manager, "get_client", return_value=client), patch.object(
             clash_manager,

@@ -84,15 +84,12 @@ def _default_config():
 
 def _apply_runtime_patch(config):
     patched = copy.deepcopy(config or {})
-    for key in ("port", "socks-port", "external-controller", "allow-lan"):
+    for key in ("external-controller", "allow-lan"):
         patched.pop(key, None)
-    patched.update(
-        {
-            "allow-lan": True,
-            "mixed-port": INSTANCE_PROXY_PORT,
-            "external-controller": f"0.0.0.0:{INSTANCE_CONTROLLER_PORT}",
-        }
-    )
+    patched["allow-lan"] = True
+    patched["external-controller"] = f"0.0.0.0:{INSTANCE_CONTROLLER_PORT}"
+    if not any(key in patched for key in ("port", "socks-port", "mixed-port")):
+        patched["mixed-port"] = INSTANCE_PROXY_PORT
 
     secret = _pool_secret()
     if secret:
