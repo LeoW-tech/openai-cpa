@@ -311,6 +311,7 @@ HERO_SMS_COUNTRY: str = "US"
 HERO_SMS_SERVICE: str = "openai"
 HERO_SMS_AUTO_PICK_COUNTRY: bool = False
 HERO_SMS_REUSE_PHONE: bool = True
+HERO_SMS_REUSE_MAX_USES: int = 2
 HERO_SMS_VERIFY_ON_REGISTER: bool = False
 HERO_SMS_MAX_PRICE: float = 2.0
 HERO_SMS_MIN_BALANCE: float = 2.0
@@ -423,7 +424,7 @@ def reload_all_configs(new_config_dict=None):
     global SUB2API_ACCOUNT_RATE_MULTIPLIER, SUB2API_ACCOUNT_GROUP_IDS, SUB2API_ENABLE_WS_MODE
     global LUCKMAIL_API_KEY, LUCKMAIL_PREFERRED_DOMAIN, LUCKMAIL_EMAIL_TYPE, LUCKMAIL_VARIANT_MODE, LUCKMAIL_REUSE_PURCHASED, LUCKMAIL_TAG_ID
     global HERO_SMS_ENABLED, HERO_SMS_API_KEY, HERO_SMS_BASE_URL, HERO_SMS_COUNTRY, HERO_SMS_SERVICE
-    global HERO_SMS_AUTO_PICK_COUNTRY, HERO_SMS_REUSE_PHONE, HERO_SMS_MAX_PRICE, HERO_SMS_VERIFY_ON_REGISTER
+    global HERO_SMS_AUTO_PICK_COUNTRY, HERO_SMS_REUSE_PHONE, HERO_SMS_REUSE_MAX_USES, HERO_SMS_MAX_PRICE, HERO_SMS_VERIFY_ON_REGISTER
     global HERO_SMS_MIN_BALANCE, HERO_SMS_MAX_TRIES, HERO_SMS_POLL_TIMEOUT_SEC
     global AI_API_BASE, AI_API_KEY, AI_MODEL, AI_ENABLE_PROFILE
     global CPA_AUTO_CHECK, SUB2API_AUTO_CHECK
@@ -715,6 +716,10 @@ def reload_all_configs(new_config_dict=None):
     HERO_SMS_SERVICE = _hero_sms_conf.get("service", "dr")
     HERO_SMS_AUTO_PICK_COUNTRY = _hero_sms_conf.get("auto_pick_country", False)
     HERO_SMS_REUSE_PHONE = _hero_sms_conf.get("reuse_phone", True)
+    try:
+        HERO_SMS_REUSE_MAX_USES = max(1, int(_hero_sms_conf.get("reuse_max_uses", 2)))
+    except Exception:
+        HERO_SMS_REUSE_MAX_USES = 2
     HERO_SMS_VERIFY_ON_REGISTER = _hero_sms_conf.get("verify_on_register", False)
 
     try:

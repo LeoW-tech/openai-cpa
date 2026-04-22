@@ -286,6 +286,7 @@ hero_sms:
   auto_pick_country: false
   verify_on_register: false
   reuse_phone: true
+  reuse_max_uses: 2
   max_price: 0.08
   min_balance: 1
   max_tries: 3

@@ -1656,7 +1656,7 @@
                                         </div>
                                     </div>
 
-                                    <div class="grid grid-cols-2 lg:grid-cols-5 gap-4 md:gap-5 mt-2">
+                                    <div class="grid grid-cols-2 lg:grid-cols-6 gap-4 md:gap-5 mt-2">
                                         <div class="bg-orange-50/50 p-4 rounded-xl border border-orange-100">
                                             <label class="block text-[11px] text-orange-900 font-black mb-1 uppercase tracking-wider">余额触发下限 ($)</label>
                                             <span class="text-[10px] text-orange-500/80 block mb-3 font-medium">低于此值停止任务</span>
@@ -1676,6 +1676,11 @@
                                             <label class="block text-[11px] text-orange-900 font-black mb-1 uppercase tracking-wider">等码超时 (秒)</label>
                                             <span class="text-[10px] text-orange-500/80 block mb-3 font-medium">单个号等多久超时</span>
                                             <input type="number" v-model.number="config.hero_sms.poll_timeout_sec" class="w-full appearance-none bg-white border border-orange-200 text-slate-700 rounded-lg py-2 px-3 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-colors shadow-sm text-sm font-mono text-center">
+                                        </div>
+                                        <div class="bg-orange-50/50 p-4 rounded-xl border border-orange-100">
+                                            <label class="block text-[11px] text-orange-900 font-black mb-1 uppercase tracking-wider">单号最大复用次数</label>
+                                            <span class="text-[10px] text-orange-500/80 block mb-3 font-medium">超过后不再继续复用</span>
+                                            <input type="number" min="1" v-model.number="config.hero_sms.reuse_max_uses" class="w-full appearance-none bg-white border border-orange-200 text-slate-700 rounded-lg py-2 px-3 focus:outline-none focus:ring-2 focus:ring-orange-500/20 focus:border-orange-500 transition-colors shadow-sm text-sm font-mono text-center">
                                         </div>
                                     </div>
 
