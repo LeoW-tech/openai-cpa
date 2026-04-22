@@ -324,6 +324,86 @@ class HeroSmsReusePoolTests(unittest.TestCase):
         self.assertEqual(0, patched["phone_bind_success_flag"])
         self.assertIn("手机验证码校验失败", patched["phone_bind_failure_reason"])
 
+    def test_verify_phone_succeeds_even_when_history_writes_raise(self):
+        hero_sms = self._reload_hero_sms(saved_state=None)
+        session = object()
+        run_ctx = {"analytics_attempt_id": 101}
+
+        class _Resp:
+            def __init__(self, status_code, payload=None):
+                self.status_code = status_code
+                self._payload = payload or {}
+                self.text = json.dumps(self._payload)
+
+            def json(self):
+                return self._payload
+
+        with patch.object(hero_sms.cfg, "HERO_SMS_ENABLED", True, create=True):
+            with patch.object(hero_sms.cfg, "HERO_SMS_API_KEY", "demo-key", create=True):
+                with patch.object(hero_sms, "hero_sms_get_balance", return_value=(3.5, "")):
+                    with patch.object(hero_sms, "_hero_sms_resolve_service_code", return_value="dr"):
+                        with patch.object(hero_sms, "_hero_sms_resolve_country_id", return_value=52):
+                            with patch.object(hero_sms, "_hero_sms_pick_country_id", return_value=52):
+                                with patch.object(hero_sms, "_hero_sms_reuse_get", return_value=("", "", 0)):
+                                    with patch.object(hero_sms, "_hero_sms_max_tries", return_value=1):
+                                        with patch.object(hero_sms, "_hero_sms_get_number", return_value=("act-best-effort", "+85251234567", "")):
+                                            with patch.object(hero_sms, "_hero_sms_mark_ready"):
+                                                with patch.object(hero_sms, "_hero_sms_poll_code", return_value="112233"):
+                                                    with patch.object(hero_sms, "_post_with_retry", side_effect=[
+                                                        _Resp(200, {"success": True}),
+                                                        _Resp(200, {"continue_url": "https://auth.openai.com/consent"}),
+                                                    ]):
+                                                        with patch.object(hero_sms.registration_history, "patch_attempt", side_effect=RuntimeError("patch-boom")):
+                                                            with patch.object(hero_sms.registration_history, "record_attempt_event", side_effect=RuntimeError("event-boom")):
+                                                                ok, next_url = hero_sms._try_verify_phone_via_hero_sms(
+                                                                    session,
+                                                                    proxies=None,
+                                                                    run_ctx=run_ctx,
+                                                                )
+
+        self.assertTrue(ok)
+        self.assertEqual("https://auth.openai.com/consent", next_url)
+
+    def test_verify_phone_failure_path_is_preserved_when_history_writes_raise(self):
+        hero_sms = self._reload_hero_sms(saved_state=None)
+        session = object()
+        run_ctx = {"analytics_attempt_id": 102}
+
+        class _Resp:
+            def __init__(self, status_code, payload=None):
+                self.status_code = status_code
+                self._payload = payload or {}
+                self.text = json.dumps(self._payload)
+
+            def json(self):
+                return self._payload
+
+        with patch.object(hero_sms.cfg, "HERO_SMS_ENABLED", True, create=True):
+            with patch.object(hero_sms.cfg, "HERO_SMS_API_KEY", "demo-key", create=True):
+                with patch.object(hero_sms, "hero_sms_get_balance", return_value=(3.5, "")):
+                    with patch.object(hero_sms, "_hero_sms_resolve_service_code", return_value="dr"):
+                        with patch.object(hero_sms, "_hero_sms_resolve_country_id", return_value=52):
+                            with patch.object(hero_sms, "_hero_sms_pick_country_id", return_value=52):
+                                with patch.object(hero_sms, "_hero_sms_reuse_get", return_value=("", "", 0)):
+                                    with patch.object(hero_sms, "_hero_sms_max_tries", return_value=1):
+                                        with patch.object(hero_sms, "_hero_sms_get_number", return_value=("act-best-effort-fail", "+85251234567", "")):
+                                            with patch.object(hero_sms, "_hero_sms_mark_ready"):
+                                                with patch.object(hero_sms, "_hero_sms_poll_code", return_value="112233"):
+                                                    with patch.object(hero_sms, "_post_with_retry", side_effect=[
+                                                        _Resp(200, {"success": True}),
+                                                        _Resp(400, {"error": "bad otp"}),
+                                                    ]):
+                                                        with patch.object(hero_sms.registration_history, "patch_attempt", side_effect=RuntimeError("patch-boom")):
+                                                            with patch.object(hero_sms.registration_history, "record_attempt_event", side_effect=RuntimeError("event-boom")):
+                                                                ok, reason = hero_sms._try_verify_phone_via_hero_sms(
+                                                                    session,
+                                                                    proxies=None,
+                                                                    run_ctx=run_ctx,
+                                                                )
+
+        self.assertFalse(ok)
+        self.assertIn("手机验证码校验失败", reason)
+
 
 if __name__ == "__main__":
     unittest.main()
