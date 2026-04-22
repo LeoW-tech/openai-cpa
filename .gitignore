@@ -29,3 +29,8 @@ test.py
 
 # 本地迁移/冷备份产物
 .migration-artifacts/
+
+# 本地 VPN 节点 YAML
+VPN节点yaml文件/shadowsocks_1897844.yaml
+VPN节点yaml文件/vv148.no-mad-world.club.yaml
+VPN节点yaml文件/iKuuu_V2.yaml
