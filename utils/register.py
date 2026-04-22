@@ -19,8 +19,21 @@ from utils import config as cfg
 from utils import registration_history
 from utils.email_providers import mail_service as _mail_service
 from utils.integrations.hero_sms import _try_verify_phone_via_hero_sms
-from utils.auth_core import generate_payload
 from utils.region_policy import is_openai_region_blocked
+
+try:
+    from utils.auth_core import generate_payload, init_auth
+except ImportError:
+    from utils.auth_core import generate_payload
+
+    def init_auth(session, email, masked_email, proxies, verify):
+        oauth_reg = generate_oauth_url()
+        session.get(oauth_reg.auth_url, proxies=proxies, verify=verify, timeout=15)
+        did = session.cookies.get("oai-did") or ""
+        if not did:
+            print(f"[{cfg.ts()}] [WARNING] （{masked_email}）未获取到 oai-did，节点环境可能被关注，请更换IP或节点。")
+        current_ua = session.headers.get("User-Agent")
+        return did, current_ua
 
 get_email_and_token = _mail_service.get_email_and_token
 get_oai_code = _mail_service.get_oai_code
@@ -548,9 +561,9 @@ def generate_oauth_url(
         "redirect_uri": redirect_uri,
         "scope": scope,
         "state": state,
+        "prompt": "login",
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        "prompt": "login",
         "id_token_add_organizations": "true",
         "codex_cli_simplified_flow": "true",
     }
@@ -766,12 +779,16 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
             is_takeover = False
             target_continue_url = ""
             try:
-                s_reg.get(oauth_reg.auth_url, proxies=proxies, verify=_ssl_verify(), timeout=15)
-                did = s_reg.cookies.get("oai-did") or ""
-                if not did:
-                    print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）未获取到 oai-did，节点环境可能被关注，请更换IP或节点。")
+                did, current_ua =init_auth(
+                    session=s_reg,
+                    email=email,
+                    masked_email=mask_email(email),
+                    proxies=proxies,
+                    verify=_ssl_verify()
+                )
 
-                current_ua = s_reg.headers.get("User-Agent")
+                if not did or not current_ua:
+                    print(f"[{cfg.ts()}] [WARNING] 未获取到 oai-did，节点环境可能被关注。")
 
                 reg_ctx = {}
 
@@ -974,7 +991,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 _history_patch(run_ctx, last_continue_url=target_continue_url)
                             except Exception:
                                 target_continue_url = ""
-
 
                 except Exception as e:
                     pass
@@ -1702,13 +1718,13 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）二次安全验证 OTP 校验失败: {code2_resp.status_code}")
                                 _set_failure(run_ctx, stage="oauth_secondary_validate_otp", http_status=code2_resp.status_code)
                                 return None, None
-
                             next_url = str(code2_resp.json().get("continue_url") or "").strip()
                             _history_patch(run_ctx, last_continue_url=next_url)
                             resp, current_url = _follow_redirect_chain_local(s_log, next_url, proxies)
                     retry_oauth_after_phone_gate = False
                     retry_oauth_after_phone_gate = False
                     oauth_trace_error_code = ""
+                    oauth_trace_error_reason = ""
                     while True:
                         if "code=" in current_url:
                             return _submit_callback_with_history(
@@ -1810,11 +1826,11 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                             if not ok or not next_url_or_reason:
                                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） {next_url_or_reason}")
-                                current_url = next_url_or_reason if next_url_or_reason else current_url
+                                oauth_trace_error_reason = str(next_url_or_reason or "").strip()
                                 _set_failure(
                                     run_ctx,
                                     stage="oauth_phone_otp",
-                                    message=str(next_url_or_reason),
+                                    message=oauth_trace_error_reason,
                                     continue_url=current_url,
                                 )
                                 break
@@ -1838,8 +1854,15 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                 if run_ctx is not None: run_ctx['phone_verify'] = True
                 error_hint = "当前账号被阻断" if oauth_trace_error_code == "identity_provider_mismatch" else ""
-                print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） OAuth 授权链路追踪失败！当前死在网页: {current_url}{error_hint}")
-                _set_failure(run_ctx, stage="oauth_trace", message=current_url or error_hint, continue_url=current_url)
+                print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） OAuth 授权链路追踪失败！当前死在网页: {current_url}")
+                if oauth_trace_error_reason or error_hint:
+                    print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） 阻断原因: {oauth_trace_error_reason or error_hint}")
+                _set_failure(
+                    run_ctx,
+                    stage="oauth_trace",
+                    message=oauth_trace_error_reason or current_url or error_hint,
+                    continue_url=current_url,
+                )
                 return None, None
 
             except Exception as e:

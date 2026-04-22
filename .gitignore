@@ -20,6 +20,7 @@ data/
 # 本地备份配置
 *副本*.yaml
 config.yaml
+shadowsocks_1897844.yaml
 utils/sentinel.py
 
 data
