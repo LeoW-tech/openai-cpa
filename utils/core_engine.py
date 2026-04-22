@@ -126,6 +126,93 @@ def _log_sub2api_restock_success() -> None:
     print(f"[{ts()}] [SUCCESS] 🚀🚀🎊🥳✨🔥 Sub2API 补货入库成功")
 
 
+def _run_history_task(label: str, func: Any, *args: Any, **kwargs: Any) -> None:
+    if not callable(func):
+        return
+
+    def _runner():
+        try:
+            func(*args, **kwargs)
+        except Exception as exc:
+            print(f"[{ts()}] [WARNING] {label} 失败(忽略并继续): {exc}")
+
+    threading.Thread(target=_runner, daemon=True, name=f"history-{label}").start()
+
+
+def _finalize_registration_history(
+        *,
+        run_ctx: Optional[dict],
+        run_id: int,
+        cpa_upload: bool,
+        account_email: str,
+        last_email: str,
+        master_email: str,
+        ret_status: str,
+) -> None:
+    source_mode = _resolve_source_mode(cpa_upload=cpa_upload, run_ctx=run_ctx)
+    analytics_attempt_id = registration_history.ensure_attempt(
+        run_ctx,
+        run_id=int(run_id or 0),
+        source_mode=source_mode,
+        flow_type="register",
+        email=account_email or last_email,
+        master_email=master_email,
+        email_provider_type=str(getattr(cfg, "EMAIL_API_MODE", "") or ""),
+        email_provider_detail="protocol",
+        proxy_url="",
+        proxy_name=str((run_ctx or {}).get("sub2api_proxy_name") or ""),
+        auto_capture_network=False,
+    )
+    if not analytics_attempt_id:
+        return
+
+    started_monotonic = (run_ctx or {}).get("analytics_started_monotonic")
+    duration_ms = None
+    if started_monotonic not in (None, ""):
+        try:
+            duration_ms = max(0, int(round((time.time() - float(started_monotonic)) * 1000)))
+        except (TypeError, ValueError):
+            duration_ms = None
+    failure_stage = str((run_ctx or {}).get("failure_stage") or "").strip()
+    failure_code = str((run_ctx or {}).get("failure_code") or "").strip()
+    failure_message = str((run_ctx or {}).get("failure_message") or "").strip()
+    last_continue_url = str((run_ctx or {}).get("last_continue_url") or "").strip()
+    last_http_status = (run_ctx or {}).get("last_http_status")
+    proxy_name = str((run_ctx or {}).get("sub2api_proxy_name") or "").strip()
+    result_snapshot = {
+        "mail_email": last_email,
+        "master_email": master_email,
+        "ret_status": ret_status,
+        "cpa_upload": bool(cpa_upload),
+    }
+    registration_history.finish_attempt(
+        analytics_attempt_id,
+        final_status=ret_status,
+        success_flag=(ret_status == "success"),
+        total_duration_ms=duration_ms,
+        failure_stage=failure_stage,
+        failure_code=failure_code,
+        failure_message=failure_message,
+        last_continue_url=last_continue_url,
+        last_http_status=int(last_http_status) if last_http_status not in (None, "") else None,
+        linked_account_email=account_email if ret_status == "success" else "",
+        linked_account_created_at=str((run_ctx or {}).get("linked_account_created_at") or "") if ret_status == "success" else "",
+        proxy_name=proxy_name,
+        local_save_ok=(run_ctx or {}).get("local_account_saved"),
+        cpa_upload_ok=(run_ctx or {}).get("cpa_upload_ok"),
+        sub2api_push_ok=(run_ctx or {}).get("sub2api_push_ok"),
+        retry_403_flag=(ret_status == "retry_403"),
+        signup_blocked_flag=(run_ctx or {}).get("signup_blocked"),
+        pwd_blocked_flag=(run_ctx or {}).get("pwd_blocked"),
+        phone_gate_hit_flag=(run_ctx or {}).get("phone_gate_hit"),
+        phone_otp_entered_flag=(run_ctx or {}).get("phone_otp_entered"),
+        phone_otp_success_flag=(run_ctx or {}).get("phone_otp_success"),
+        labels_json={"mode": "cpa" if cpa_upload else "local"},
+        metrics_json=(run_ctx or {}).get("analytics_metrics") or {},
+        result_snapshot_json=result_snapshot,
+    )
+
+
 def _load_dotenv(path: str = ".env") -> None:
     if not os.path.exists(path):
         return
@@ -621,33 +708,8 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
             
     else:
         with _stats_lock: run_stats["success"] += 1
-        token_data = _apply_sub2api_proxy_name(json.loads(token_json_str), run_ctx)
+        token_data = json.loads(token_json_str)
         account_email = token_data.get("email", "unknown")
-        token_json_str = json.dumps(token_data, ensure_ascii=False, separators=(",", ":"))
-        source_mode = _resolve_source_mode(cpa_upload=cpa_upload, run_ctx=run_ctx)
-        ensured_attempt_id = registration_history.ensure_attempt(
-            run_ctx,
-            run_id=int(run_stats.get("analytics_run_id") or 0),
-            source_mode=source_mode,
-            flow_type="register",
-            email=account_email,
-            master_email=master_email,
-            email_provider_type=str(getattr(cfg, "EMAIL_API_MODE", "") or ""),
-            email_provider_detail="protocol",
-            proxy_url="",
-            proxy_name=str((run_ctx or {}).get("sub2api_proxy_name") or ""),
-            auto_capture_network=False,
-        )
-        if run_ctx is not None and not ensured_attempt_id:
-            registration_history.record_history_failure(
-                stage="ensure_attempt_before_save",
-                source_mode=source_mode,
-                run_id=int(run_stats.get("analytics_run_id") or 0),
-                email=account_email,
-                proxy_name=str((run_ctx or {}).get("sub2api_proxy_name") or ""),
-                error_message="missing attempt before local save",
-                payload={"ret_status": ret_status},
-            )
 
         # 存入本地数据库
         if cpa_upload:
@@ -665,6 +727,7 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
             if run_ctx is not None:
                 run_ctx["local_account_saved"] = bool(saved_ok)
                 if saved_ok:
+                    db_manager.set_account_analytics_run_id(account_email, int(run_stats.get("analytics_run_id") or 0))
                     run_ctx["linked_account_created_at"] = db_manager.get_account_created_at(account_email)
             if saved_ok:
                 _log_local_account_saved_success(account_email)
@@ -699,86 +762,25 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
 
         send_tg_msg_sync(success_text)
 
-    source_mode = _resolve_source_mode(cpa_upload=cpa_upload, run_ctx=run_ctx)
-    analytics_attempt_id = registration_history.ensure_attempt(
-        run_ctx,
+    run_ctx_snapshot = dict(run_ctx or {})
+    metrics = run_ctx_snapshot.get("analytics_metrics")
+    if isinstance(metrics, dict):
+        run_ctx_snapshot["analytics_metrics"] = dict(metrics)
+    _run_history_task(
+        "register-finalize",
+        _finalize_registration_history,
+        run_ctx=run_ctx_snapshot,
         run_id=int(run_stats.get("analytics_run_id") or 0),
-        source_mode=source_mode,
-        flow_type="register",
-        email=account_email or last_email,
+        cpa_upload=cpa_upload,
+        account_email=account_email,
+        last_email=last_email,
         master_email=master_email,
-        email_provider_type=str(getattr(cfg, "EMAIL_API_MODE", "") or ""),
-        email_provider_detail="protocol",
-        proxy_url="",
-        proxy_name=str((run_ctx or {}).get("sub2api_proxy_name") or ""),
-        auto_capture_network=False,
+        ret_status=ret_status,
     )
-    if analytics_attempt_id:
-        started_monotonic = (run_ctx or {}).get("analytics_started_monotonic")
-        duration_ms = None
-        if started_monotonic not in (None, ""):
-            try:
-                duration_ms = max(0, int(round((time.time() - float(started_monotonic)) * 1000)))
-            except (TypeError, ValueError):
-                duration_ms = None
-        failure_stage = str((run_ctx or {}).get("failure_stage") or "").strip()
-        failure_code = str((run_ctx or {}).get("failure_code") or "").strip()
-        failure_message = str((run_ctx or {}).get("failure_message") or "").strip()
-        last_continue_url = str((run_ctx or {}).get("last_continue_url") or "").strip()
-        last_http_status = (run_ctx or {}).get("last_http_status")
-        proxy_name = str((run_ctx or {}).get("sub2api_proxy_name") or "").strip()
-        result_snapshot = {
-            "mail_email": last_email,
-            "master_email": master_email,
-            "ret_status": ret_status,
-            "cpa_upload": bool(cpa_upload),
-        }
-        registration_history.finish_attempt(
-            analytics_attempt_id,
-            final_status=ret_status,
-            success_flag=(ret_status == "success"),
-            total_duration_ms=duration_ms,
-            failure_stage=failure_stage,
-            failure_code=failure_code,
-            failure_message=failure_message,
-            last_continue_url=last_continue_url,
-            last_http_status=int(last_http_status) if last_http_status not in (None, "") else None,
-            linked_account_email=account_email if ret_status == "success" else "",
-            linked_account_created_at=str((run_ctx or {}).get("linked_account_created_at") or "") if ret_status == "success" else "",
-            proxy_name=proxy_name,
-            local_save_ok=(run_ctx or {}).get("local_account_saved"),
-            cpa_upload_ok=(run_ctx or {}).get("cpa_upload_ok"),
-            sub2api_push_ok=(run_ctx or {}).get("sub2api_push_ok"),
-            retry_403_flag=(ret_status == "retry_403"),
-            signup_blocked_flag=(run_ctx or {}).get("signup_blocked"),
-            pwd_blocked_flag=(run_ctx or {}).get("pwd_blocked"),
-            phone_gate_hit_flag=(run_ctx or {}).get("phone_gate_hit"),
-            phone_otp_entered_flag=(run_ctx or {}).get("phone_otp_entered"),
-            phone_otp_success_flag=(run_ctx or {}).get("phone_otp_success"),
-            labels_json={"mode": "cpa" if cpa_upload else "local"},
-            metrics_json=(run_ctx or {}).get("analytics_metrics") or {},
-            result_snapshot_json=result_snapshot,
-        )
-    elif run_ctx is not None:
-        registration_history.record_history_failure(
-            stage="finish_attempt",
-            source_mode=source_mode,
-            run_id=int(run_stats.get("analytics_run_id") or 0),
-            email=account_email or last_email,
-            proxy_name=str((run_ctx or {}).get("sub2api_proxy_name") or ""),
-            error_message="missing attempt at finalization",
-            payload={"ret_status": ret_status},
-        )
-    if (
-        getattr(cfg, "EMAIL_API_MODE", "") == "local_microsoft"
-        and last_email
-        and hasattr(mail_service, "release_local_microsoft_listener")
-    ):
-        mail_service.release_local_microsoft_listener(last_email)
     return ret_status
 
 
-def _apply_sub2api_proxy_name(token_data: dict, run_ctx: dict = None, proxy_url: str = None) -> dict:
+def _build_sub2api_push_token_data(token_data: dict, run_ctx: dict = None, proxy_url: str = None) -> dict:
     if not isinstance(token_data, dict):
         return token_data
 
@@ -818,7 +820,7 @@ def add_result_account_to_sub2api(client: Any, result: Any, run_ctx: dict = None
     if not result or not isinstance(result, (tuple, list)) or not result[0]:
         return False, "missing token result", None
 
-    token_dict = _apply_sub2api_proxy_name(json.loads(result[0]), run_ctx, proxy_url)
+    token_dict = _build_sub2api_push_token_data(json.loads(result[0]), run_ctx, proxy_url)
     ok, msg = client.add_account(token_dict)
     return ok, msg, token_dict
 
@@ -846,19 +848,6 @@ def run_and_refresh(proxy, args, cpa_upload=False, skip_switch=False):
     run_ctx["analytics_started_monotonic"] = time.time()
     run_ctx["analytics_metrics"] = {}
     run_ctx["analytics_attempt_no"] = int(run_stats.get("success", 0) + run_stats.get("failed", 0) + run_stats.get("retries", 0) + 1)
-    run_ctx["analytics_attempt_id"] = registration_history.start_attempt(
-        run_id=int(run_stats.get("analytics_run_id") or 0),
-        task_id="",
-        worker_id="",
-        source_mode=_resolve_source_mode(cpa_upload=cpa_upload, run_ctx=run_ctx),
-        attempt_no=int(run_ctx["analytics_attempt_no"]),
-        flow_type="register",
-        email_provider_type=str(getattr(cfg, "EMAIL_API_MODE", "") or ""),
-        email_provider_detail="protocol",
-        proxy_url=proxy,
-        proxy_name=str(run_ctx.get("sub2api_proxy_name") or ""),
-        auto_capture_network=False,
-    )
     try:
         result = run(proxy, run_ctx=run_ctx)
     except Exception as e:
@@ -1508,19 +1497,6 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event, executor=None
                     run_ctx["analytics_started_monotonic"] = time.time()
                     run_ctx["analytics_metrics"] = {}
                     run_ctx["analytics_attempt_no"] = int(run_stats.get("success", 0) + run_stats.get("failed", 0) + run_stats.get("retries", 0) + 1)
-                    run_ctx["analytics_attempt_id"] = registration_history.start_attempt(
-                        run_id=int(run_stats.get("analytics_run_id") or 0),
-                        task_id="",
-                        worker_id="",
-                        source_mode="sub2api",
-                        attempt_no=int(run_ctx["analytics_attempt_no"]),
-                        flow_type="register",
-                        email_provider_type=str(getattr(cfg, "EMAIL_API_MODE", "") or ""),
-                        email_provider_detail="protocol",
-                        proxy_url=p,
-                        proxy_name=str(run_ctx.get("sub2api_proxy_name") or ""),
-                        auto_capture_network=False,
-                    )
                     result = run(p, run_ctx=run_ctx)
                     status = handle_registration_result(result, cpa_upload=False, run_ctx=run_ctx)
 

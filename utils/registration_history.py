@@ -384,6 +384,8 @@ def _replay_pending_history(run_ctx: Optional[dict], attempt_id: int) -> None:
 
 def start_run(
         *,
+        run_id: int = 0,
+        started_at: str = "",
         source_mode: str,
         target_count: int = 0,
         trigger_source: str = "",
@@ -395,8 +397,56 @@ def start_run(
     if not _analytics_enabled():
         return 0
     try:
+        resolved_started_at = str(started_at or _utc_now_str()).strip()
         with db_manager.get_db_conn() as conn:
             cursor = db_manager.get_cursor(conn)
+            if int(run_id or 0) > 0:
+                existing = _safe_execute_one(
+                    "SELECT id FROM registration_runs WHERE id = ?",
+                    (int(run_id),),
+                )
+                if existing:
+                    db_manager.execute_sql(
+                        cursor,
+                        """
+                        UPDATE registration_runs
+                        SET source_mode = ?, started_at = ?, target_count = ?, config_snapshot_json = ?,
+                            trigger_source = ?, host_name = ?, worker_id = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            str(source_mode or "").strip(),
+                            resolved_started_at,
+                            int(target_count or 0),
+                            _json_dumps(config_snapshot or {}),
+                            str(trigger_source or "").strip(),
+                            str(host_name or _host_name()).strip(),
+                            str(worker_id or "").strip(),
+                            int(run_id),
+                        ),
+                    )
+                else:
+                    db_manager.execute_sql(
+                        cursor,
+                        """
+                        INSERT INTO registration_runs (
+                            id, source_mode, started_at, target_count, config_snapshot_json,
+                            trigger_source, host_name, worker_id, notes_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            int(run_id),
+                            str(source_mode or "").strip(),
+                            resolved_started_at,
+                            int(target_count or 0),
+                            _json_dumps(config_snapshot or {}),
+                            str(trigger_source or "").strip(),
+                            str(host_name or _host_name()).strip(),
+                            str(worker_id or "").strip(),
+                            _json_dumps(notes or {}),
+                        ),
+                    )
+                return int(run_id)
             db_manager.execute_sql(
                 cursor,
                 """
@@ -407,7 +457,7 @@ def start_run(
                 """,
                 (
                     str(source_mode or "").strip(),
-                    _utc_now_str(),
+                    resolved_started_at,
                     int(target_count or 0),
                     _json_dumps(config_snapshot or {}),
                     str(trigger_source or "").strip(),
@@ -427,11 +477,11 @@ def finish_run(run_id: int, notes: Optional[dict] = None) -> bool:
         return False
     try:
         current_notes = ""
+        existing = _safe_execute_one(
+            "SELECT notes_json FROM registration_runs WHERE id = ?",
+            (run_id,),
+        )
         if notes:
-            existing = _safe_execute_one(
-                "SELECT notes_json FROM registration_runs WHERE id = ?",
-                (run_id,),
-            )
             if existing and existing[0]:
                 try:
                     payload = json.loads(existing[0])
@@ -443,6 +493,27 @@ def finish_run(run_id: int, notes: Optional[dict] = None) -> bool:
                 current_notes = _json_dumps(notes)
         with db_manager.get_db_conn() as conn:
             cursor = db_manager.get_cursor(conn)
+            if not existing:
+                db_manager.execute_sql(
+                    cursor,
+                    """
+                    INSERT OR IGNORE INTO registration_runs (
+                        id, source_mode, started_at, target_count, config_snapshot_json,
+                        trigger_source, host_name, worker_id, notes_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(run_id),
+                        "unknown",
+                        _utc_now_str(),
+                        0,
+                        _json_dumps({}),
+                        "",
+                        str(_host_name()).strip(),
+                        "",
+                        current_notes,
+                    ),
+                )
             db_manager.execute_sql(
                 cursor,
                 "UPDATE registration_runs SET ended_at = ?, notes_json = ? WHERE id = ?",
@@ -1506,6 +1577,15 @@ def record_cluster_account_result(account: dict[str, Any], *, node_name: str, ru
     if existing:
         return int(existing[0] or 0)
 
+    if int(run_id or 0) > 0:
+        start_run(
+            run_id=int(run_id),
+            started_at=created_at,
+            source_mode="cluster_import",
+            trigger_source=str(node_name or "").strip(),
+            config_snapshot={"source_node_name": str(node_name or "").strip()},
+        )
+
     attempt_id = start_attempt(
         run_id=run_id,
         task_id=str(payload.get("task_id") or "").strip(),
@@ -1640,18 +1720,21 @@ def record_extension_result(req: Any, run_id: int = 0) -> int:
         phone_bind_provider=str(getattr(req, "phone_bind_provider", "") or "").strip(),
     )
     if exit_ip and not geo_country_name:
-        geo = lookup_geo_for_ip(exit_ip)
-        patch_attempt(
-            attempt_id,
-            geo_country_code=geo.get("country_code") or "",
-            geo_country_name=geo.get("country_name") or "",
-            geo_region_name=geo.get("region_name") or "",
-            geo_city_name=geo.get("city_name") or "",
-            geo_isp=geo.get("isp") or "",
-            geo_asn=geo.get("asn") or "",
-            geo_source=geo.get("source") or "",
-            geo_status=geo.get("status") or "",
-        )
+        try:
+            geo = lookup_geo_for_ip(exit_ip)
+            patch_attempt(
+                attempt_id,
+                geo_country_code=geo.get("country_code") or "",
+                geo_country_name=geo.get("country_name") or "",
+                geo_region_name=geo.get("region_name") or "",
+                geo_city_name=geo.get("city_name") or "",
+                geo_isp=geo.get("isp") or "",
+                geo_asn=geo.get("asn") or "",
+                geo_source=geo.get("source") or "",
+                geo_status=geo.get("status") or "",
+            )
+        except Exception as exc:
+            print(f"[{cfg.ts()}] [WARNING] extension geo lookup failed: {exc}")
     events = getattr(req, "events", None) or []
     for item in events:
         if not isinstance(item, dict):

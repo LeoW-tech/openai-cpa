@@ -86,7 +86,7 @@ class ApiConfigHeroSmsTests(unittest.TestCase):
 
         return importlib.reload(api_routes)
 
-    def test_get_config_strips_legacy_hero_sms_reuse_max_uses(self):
+    def test_get_config_preserves_hero_sms_reuse_max_uses(self):
         api_routes = self._reload_api_routes()
         api_routes.core_engine.cfg._c = {
             "hero_sms": {
@@ -98,9 +98,23 @@ class ApiConfigHeroSmsTests(unittest.TestCase):
 
         result = asyncio.run(api_routes.get_config(token="demo"))
 
-        self.assertNotIn("reuse_max_uses", result["hero_sms"])
+        self.assertEqual(3, result["hero_sms"]["reuse_max_uses"])
 
-    def test_save_config_strips_legacy_hero_sms_reuse_max_uses_before_reload(self):
+    def test_get_config_backfills_default_reuse_max_uses_when_missing(self):
+        api_routes = self._reload_api_routes()
+        api_routes.core_engine.cfg._c = {
+            "hero_sms": {
+                "enabled": True,
+                "reuse_phone": True,
+            }
+        }
+        api_routes.core_engine.cfg.HERO_SMS_REUSE_MAX_USES = 4
+
+        result = asyncio.run(api_routes.get_config(token="demo"))
+
+        self.assertEqual(4, result["hero_sms"]["reuse_max_uses"])
+
+    def test_save_config_keeps_hero_sms_reuse_max_uses_before_reload(self):
         api_routes = self._reload_api_routes()
         new_config = {
             "hero_sms": {
@@ -115,9 +129,9 @@ class ApiConfigHeroSmsTests(unittest.TestCase):
 
         self.assertEqual("success", result["status"])
         saved_config = reload_configs.call_args.kwargs["new_config_dict"]
-        self.assertNotIn("reuse_max_uses", saved_config["hero_sms"])
+        self.assertEqual(5, saved_config["hero_sms"]["reuse_max_uses"])
 
-    def test_save_config_merges_missing_sections_from_existing_runtime_config(self):
+    def test_save_config_does_not_merge_missing_sections_from_runtime_config(self):
         api_routes = self._reload_api_routes()
         api_routes.core_engine.cfg._c = {
             "hero_sms": {
@@ -157,14 +171,11 @@ class ApiConfigHeroSmsTests(unittest.TestCase):
         self.assertEqual("success", result["status"])
         saved_config = reload_configs.call_args.kwargs["new_config_dict"]
         self.assertEqual(False, saved_config["hero_sms"]["enabled"])
-        self.assertEqual("existing-key", saved_config["hero_sms"]["api_key"])
-        self.assertEqual("https://hero-sms.example/api", saved_config["hero_sms"]["base_url"])
-        self.assertEqual("https://sub2api.example", saved_config["sub2api_mode"]["api_url"])
-        self.assertEqual("sub-key", saved_config["sub2api_mode"]["api_key"])
-        self.assertEqual("https://cpa.example", saved_config["cpa_mode"]["api_url"])
-        self.assertEqual("cpa-token", saved_config["cpa_mode"]["api_token"])
-        self.assertEqual({"enable": True, "chat_id": "chat-1"}, saved_config["tg_bot"])
-        self.assertEqual("secret-pass", saved_config["web_password"])
+        self.assertNotIn("api_key", saved_config["hero_sms"])
+        self.assertEqual({}, saved_config["sub2api_mode"])
+        self.assertEqual({}, saved_config["cpa_mode"])
+        self.assertNotIn("tg_bot", saved_config)
+        self.assertNotIn("web_password", saved_config)
 
 
 if __name__ == "__main__":

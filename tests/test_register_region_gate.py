@@ -50,7 +50,10 @@ class RegisterRegionGateTests(unittest.TestCase):
                     "utils.integrations.hero_sms": types.SimpleNamespace(
                         _try_verify_phone_via_hero_sms=lambda *args, **kwargs: (False, "")
                     ),
-                    "utils.auth_core": types.SimpleNamespace(generate_payload=lambda *args, **kwargs: "sentinel-token"),
+                    "utils.auth_core": types.SimpleNamespace(
+                        generate_payload=lambda *args, **kwargs: "sentinel-token",
+                        init_auth=lambda *args, **kwargs: ("did-demo", "unit-test-agent"),
+                    ),
                 },
             )
         )

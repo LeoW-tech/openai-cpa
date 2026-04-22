@@ -13,7 +13,7 @@ class ConfigHeroSmsReuseTests(unittest.TestCase):
 
         return importlib.reload(config)
 
-    def test_reload_all_configs_ignores_legacy_hero_sms_reuse_max_uses(self):
+    def test_reload_all_configs_keeps_hero_sms_reuse_max_uses(self):
         config = self._reload_config()
         config_payload = {
             "database": {"type": "sqlite", "mysql": {}},
@@ -43,9 +43,10 @@ class ConfigHeroSmsReuseTests(unittest.TestCase):
             saved_payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
         self.assertTrue(config.HERO_SMS_REUSE_PHONE)
-        self.assertFalse(hasattr(config, "HERO_SMS_REUSE_MAX_USES"))
+        self.assertEqual(9, config.HERO_SMS_REUSE_MAX_USES)
         self.assertTrue(saved_payload["hero_sms"]["enabled"])
         self.assertEqual("demo-key", saved_payload["hero_sms"]["api_key"])
+        self.assertEqual(9, saved_payload["hero_sms"]["reuse_max_uses"])
 
     def test_reload_all_configs_does_not_truncate_existing_config_when_dump_fails(self):
         config = self._reload_config()

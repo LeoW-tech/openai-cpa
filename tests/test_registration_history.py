@@ -245,10 +245,39 @@ class RegistrationHistoryTests(unittest.TestCase):
         self.assertEqual(1, attempt_row[8])
         self.assertEqual(1, attempt_row[9])
         self.assertEqual(1, attempt_row[10])
-        self.assertGreaterEqual(event_count, 2)
+        self.assertEqual(4, event_count)
         self.assertEqual("sub2api", run_row[0])
         self.assertEqual("worker-A", run_row[1])
         self.assertEqual({"finished": True}, json.loads(run_row[2]))
+
+    def test_finish_run_then_start_run_with_same_id_preserves_ended_at_and_notes(self):
+        run_id = 424242
+        self.history.finish_run(run_id, notes={"success": 3, "failed": 1})
+        self.history.start_run(
+            run_id=run_id,
+            started_at="2026-04-22 10:00:00",
+            source_mode="normal",
+            target_count=2,
+            trigger_source="unit-test",
+            config_snapshot={"email_api_mode": "mailbox"},
+        )
+
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT started_at, ended_at, source_mode, target_count, notes_json, config_snapshot_json
+                FROM registration_runs
+                WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+
+        self.assertEqual("2026-04-22 10:00:00", row[0])
+        self.assertTrue(row[1])
+        self.assertEqual("normal", row[2])
+        self.assertEqual(2, row[3])
+        self.assertEqual({"success": 3, "failed": 1}, json.loads(row[4]))
+        self.assertEqual({"email_api_mode": "mailbox"}, json.loads(row[5]))
 
     def test_start_run_persists_login_delay_config_snapshot(self):
         run_id = self.history.start_run(
@@ -455,6 +484,26 @@ class RegistrationHistoryTests(unittest.TestCase):
         self.assertTrue(first_id)
         self.assertEqual(first_id, second_id)
 
+    def test_record_cluster_account_result_creates_run_header_when_run_id_present(self):
+        payload = {
+            "analytics_run_id": 2468,
+            "email": "cluster-run@example.com",
+            "password": "unit-pass",
+            "token_data": json.dumps({"email": "cluster-run@example.com"}),
+            "created_at": "2026-04-18 08:20:00",
+        }
+
+        attempt_id = self.history.record_cluster_account_result(payload, node_name="NODE-9", run_id=2468)
+
+        with sqlite3.connect(self.db_path) as conn:
+            run_row = conn.execute(
+                "SELECT id, source_mode, trigger_source FROM registration_runs WHERE id = ?",
+                (2468,),
+            ).fetchone()
+
+        self.assertTrue(attempt_id)
+        self.assertEqual((2468, "cluster_import", "NODE-9"), run_row)
+
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -463,17 +512,17 @@ class RegistrationHistoryTests(unittest.TestCase):
                 FROM registration_attempts
                 WHERE linked_account_email = ?
                 """,
-                ("cluster@example.com",),
+                ("cluster-run@example.com",),
             ).fetchone()
 
         self.assertEqual(1, rows[0])
         self.assertEqual("cluster_import", rows[1])
         self.assertEqual(1, rows[2])
         self.assertEqual("success", rows[3])
-        self.assertEqual("🇯🇵 日本W03 | IEPL", rows[4])
-        self.assertEqual("Japan", rows[5])
+        self.assertEqual("", rows[4])
+        self.assertEqual("", rows[5])
         self.assertEqual("", rows[6])
-        self.assertEqual("NODE-2", rows[7])
+        self.assertEqual("NODE-9", rows[7])
 
     def test_ensure_attempt_flushes_pending_patch_and_events(self):
         run_ctx = {

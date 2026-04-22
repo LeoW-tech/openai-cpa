@@ -103,7 +103,7 @@ except Exception:
             return False, "clash_manager unavailable"
 
         @staticmethod
-        def patch_and_update(sub_url, target):
+        def patch_and_update(sub_file_path="", sub_url="", target="all"):
             return False, "clash_manager unavailable"
 
     clash_manager = _FallbackClashManager()
@@ -159,6 +159,7 @@ class ClusterControlReq(BaseModel): node_name: str; action: str
 class ExtResultReq(BaseModel):
     status: str
     task_id: Optional[str] = ""
+    analytics_run_id: Optional[int] = 0
     email: Optional[str] = ""
     password: Optional[str] = ""
     error_msg: Optional[str] = ""
@@ -283,6 +284,70 @@ def _is_cpa_cloud_enabled() -> bool:
         and not _is_placeholder_remote_value(getattr(cfg, "CPA_API_TOKEN", ""))
     )
 
+
+def _run_history_task(label: str, func: Any, *args: Any, **kwargs: Any) -> None:
+    if not callable(func):
+        return
+
+    def _runner():
+        try:
+            func(*args, **kwargs)
+        except Exception as exc:
+            print(f"[{core_engine.ts()}] [WARNING] {label} 失败(忽略并继续): {exc}")
+
+    threading.Thread(target=_runner, daemon=True, name=f"history-{label}").start()
+
+
+def _generate_async_run_id() -> int:
+    return max(1, int(time.time() * 1_000_000))
+
+
+def _generate_run_started_at() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _start_run_history(*, run_id: int, started_at: str, source_mode: str, target_count: int, trigger_source: str, config_snapshot: dict) -> None:
+    run_id = registration_history.start_run(
+        run_id=run_id,
+        started_at=started_at,
+        source_mode=source_mode,
+        target_count=target_count,
+        trigger_source=trigger_source,
+        config_snapshot=config_snapshot,
+    )
+    core_engine.run_stats["analytics_run_id"] = int(run_id or 0)
+
+
+def _finish_run_history(run_id: int, notes: dict[str, Any]) -> None:
+    if not run_id:
+        return
+    registration_history.finish_run(run_id, notes=notes)
+
+
+def _record_cluster_history(account: dict[str, Any], *, node_name: str, run_id: int) -> None:
+    attempt_id = registration_history.record_cluster_account_result(
+        account,
+        node_name=node_name,
+        run_id=run_id,
+    )
+    if not attempt_id:
+        print(f"[{core_engine.ts()}] [WARNING] 集群账号落历史失败: node={node_name}, email={account.get('email')}")
+
+
+def _record_extension_success_history(req: Any, *, token_json: str, run_id: int, saved_ok: bool) -> None:
+    history_req = req.model_copy(update={"token_data": token_json})
+    attempt_id = registration_history.record_extension_result(history_req, run_id=run_id)
+    if not attempt_id:
+        return
+    patch_payload = {"local_save_ok": 1 if saved_ok else 0}
+    if saved_ok:
+        patch_payload["linked_account_created_at"] = db_manager.get_account_created_at(req.email)
+    registration_history.patch_attempt(attempt_id, **patch_payload)
+
+
+def _record_extension_failure_history(req: Any, *, run_id: int) -> None:
+    registration_history.record_extension_result(req, run_id=run_id)
+
 @router.get("/")
 async def get_dashboard():
     version = "1.0.0"
@@ -332,7 +397,13 @@ async def start_task(token: str = Depends(verify_token)):
     analytics_mode = "cpa" if getattr(core_engine.cfg, 'ENABLE_CPA_MODE', False) else (
         "sub2api" if getattr(core_engine.cfg, 'ENABLE_SUB2API_MODE', False) else "normal"
     )
-    core_engine.run_stats["analytics_run_id"] = registration_history.start_run(
+    core_engine.run_stats["analytics_run_id"] = _generate_async_run_id()
+    run_started_at = _generate_run_started_at()
+    _run_history_task(
+        "start-run",
+        _start_run_history,
+        run_id=int(core_engine.run_stats["analytics_run_id"]),
+        started_at=run_started_at,
         source_mode=analytics_mode,
         target_count=getattr(core_engine.cfg, 'NORMAL_TARGET_COUNT', 0),
         trigger_source="api_start",
@@ -380,9 +451,11 @@ async def stop_task(token: str = Depends(verify_token)):
     engine.stop()
     analytics_run_id = int(core_engine.run_stats.get("analytics_run_id") or 0)
     if analytics_run_id:
-        registration_history.finish_run(
+        _run_history_task(
+            "finish-run",
+            _finish_run_history,
             analytics_run_id,
-            notes={
+            {
                 "success": stats.get("success", 0),
                 "failed": stats.get("failed", 0),
                 "retries": stats.get("retries", 0),
@@ -649,26 +722,15 @@ def _sanitize_local_microsoft_config(local_ms: Any) -> dict:
     return data
 
 
-def _deep_merge_config(base: Any, incoming: Any) -> Any:
-    if isinstance(base, dict) and isinstance(incoming, dict):
-        merged = copy.deepcopy(base)
-        for key, value in incoming.items():
-            if key in merged:
-                merged[key] = _deep_merge_config(merged[key], value)
-            else:
-                merged[key] = copy.deepcopy(value)
-        return merged
-    return copy.deepcopy(incoming)
-
-
 @router.get("/api/config")
 async def get_config(token: str = Depends(verify_token)):
     config_data = getattr(core_engine.cfg, '_c', {}).copy()
 
     if isinstance(config_data.get("sub2api_mode"), dict):
         config_data["sub2api_mode"].pop("min_remaining_weekly_percent", None)
-    if isinstance(config_data.get("hero_sms"), dict):
-        config_data["hero_sms"].pop("reuse_max_uses", None)
+    hero_sms_cfg = dict(config_data.get("hero_sms") or {}) if isinstance(config_data.get("hero_sms"), dict) else {}
+    hero_sms_cfg.setdefault("reuse_max_uses", getattr(core_engine.cfg, "HERO_SMS_REUSE_MAX_USES", 2))
+    config_data["hero_sms"] = hero_sms_cfg
     config_data["web_password"] = getattr(core_engine.cfg, "WEB_PASSWORD", config_data.get("web_password", "admin"))
     config_data["local_microsoft"] = _sanitize_local_microsoft_config(config_data.get("local_microsoft"))
     return config_data
@@ -677,13 +739,11 @@ async def get_config(token: str = Depends(verify_token)):
 @router.post("/api/config")
 async def save_config(new_config: dict, token: str = Depends(verify_token)):
     try:
-        merged_config = _deep_merge_config(getattr(core_engine.cfg, "_c", {}) or {}, new_config or {})
-        if isinstance(merged_config.get("sub2api_mode"), dict):
-            merged_config["sub2api_mode"].pop("min_remaining_weekly_percent", None)
-        if isinstance(merged_config.get("hero_sms"), dict):
-            merged_config["hero_sms"].pop("reuse_max_uses", None)
-        merged_config["local_microsoft"] = _sanitize_local_microsoft_config(merged_config.get("local_microsoft"))
-        reload_all_configs(new_config_dict=merged_config)
+        new_config = copy.deepcopy(new_config or {})
+        if isinstance(new_config.get("sub2api_mode"), dict):
+            new_config["sub2api_mode"].pop("min_remaining_weekly_percent", None)
+        new_config["local_microsoft"] = _sanitize_local_microsoft_config(new_config.get("local_microsoft"))
+        reload_all_configs(new_config_dict=new_config)
 
         return {"status": "success", "message": "✅ 配置已成功保存并同步至云端！"}
     except Exception as e:
@@ -1220,18 +1280,22 @@ def cluster_upload_accounts(req: ClusterUploadAccountsReq):
     success_count = 0
     for acc in req.accounts:
         if acc.get("email") and acc.get("token_data"):
+            saved_ok = db_manager.save_account_to_db(acc.get("email"), acc.get("password"), acc.get("token_data"))
+            if saved_ok:
+                success_count += 1
             try:
-                attempt_id = registration_history.record_cluster_account_result(
-                    acc,
-                    node_name=req.node_name,
-                    run_id=int(core_engine.run_stats.get("analytics_run_id") or 0),
-                )
-                if not attempt_id:
-                    print(f"[{core_engine.ts()}] [WARNING] 集群账号落历史失败: node={req.node_name}, email={acc.get('email')}")
-            except Exception as e:
-                print(f"[{core_engine.ts()}] [ERROR] 集群账号写入历史异常: node={req.node_name}, email={acc.get('email')}, error={e}")
-            if db_manager.save_account_to_db(acc.get("email"), acc.get("password"),
-                                             acc.get("token_data")): success_count += 1
+                account_run_id = int(acc.get("analytics_run_id") or acc.get("run_id") or 0)
+            except (TypeError, ValueError, AttributeError):
+                account_run_id = 0
+            if saved_ok:
+                db_manager.set_account_analytics_run_id(acc.get("email"), account_run_id)
+            _run_history_task(
+                "cluster-upload-history",
+                _record_cluster_history,
+                acc,
+                node_name=req.node_name,
+                run_id=account_run_id,
+            )
 
     msg = f"[{core_engine.ts()}] [系统] 📦 成功从子控 [{req.node_name}] 提取并完美入库 {success_count} 个账号！"
     print(msg)
@@ -1276,6 +1340,7 @@ def ext_generate_task(token: str = Depends(verify_token)):
         return {
             "status": "success",
             "task_data": {
+                "analytics_run_id": int(core_engine.run_stats.get("analytics_run_id") or 0),
                 "email": email,
                 "email_jwt": email_jwt,
                 "password": password,
@@ -1306,6 +1371,10 @@ def ext_get_mail_code(email: str, email_jwt: str = "", type: str = "signup", max
 def ext_submit_result(req: ExtResultReq, token: str = Depends(verify_token)):
     from utils import core_engine
     from utils.register import submit_callback_url
+    try:
+        reported_run_id = int(getattr(req, "analytics_run_id", 0) or 0)
+    except (TypeError, ValueError):
+        reported_run_id = 0
 
     if req.status == "success":
         token_json = req.token_data
@@ -1319,17 +1388,17 @@ def ext_submit_result(req: ExtResultReq, token: str = Depends(verify_token)):
             except Exception as e:
                 print(f"换取 Token 失败: {e}")
                 return {"status": "error", "message": "Token 换取失败"}
-        history_req = req.model_copy(update={"token_data": token_json})
-        attempt_id = registration_history.record_extension_result(
-            history_req,
-            run_id=int(core_engine.run_stats.get("analytics_run_id") or 0),
-        )
         saved_ok = db_manager.save_account_to_db(req.email, req.password, token_json)
-        if attempt_id:
-            patch_payload = {"local_save_ok": 1 if saved_ok else 0}
-            if saved_ok:
-                patch_payload["linked_account_created_at"] = db_manager.get_account_created_at(req.email)
-            registration_history.patch_attempt(attempt_id, **patch_payload)
+        if saved_ok:
+            db_manager.set_account_analytics_run_id(req.email, reported_run_id)
+        _run_history_task(
+            "extension-success-history",
+            _record_extension_success_history,
+            req,
+            token_json=token_json,
+            run_id=reported_run_id,
+            saved_ok=saved_ok,
+        )
         core_engine.run_stats['success'] = core_engine.run_stats.get('success', 0) + 1
 
         return {"status": "success", "message": "战利品已入库"}
@@ -1341,9 +1410,11 @@ def ext_submit_result(req: ExtResultReq, token: str = Depends(verify_token)):
             is_dead_account = True
         elif req.error_type == 'pwd_blocked':
             core_engine.run_stats['pwd_blocked'] = core_engine.run_stats.get('pwd_blocked', 0) + 1
-        registration_history.record_extension_result(
+        _run_history_task(
+            "extension-failure-history",
+            _record_extension_failure_history,
             req,
-            run_id=int(core_engine.run_stats.get("analytics_run_id") or 0),
+            run_id=reported_run_id,
         )
         if is_dead_account and getattr(cfg, "EMAIL_API_MODE", "") == "local_microsoft" and req.email:
             db_manager.update_local_mailbox_status(req.email, 3)
@@ -1380,7 +1451,13 @@ def ext_reset_stats(token: str = Depends(verify_token)):
         "target": getattr(core_engine.cfg, 'NORMAL_TARGET_COUNT', 0),
         "ext_is_running": True
     })
-    core_engine.run_stats["analytics_run_id"] = registration_history.start_run(
+    core_engine.run_stats["analytics_run_id"] = _generate_async_run_id()
+    run_started_at = _generate_run_started_at()
+    _run_history_task(
+        "extension-start-run",
+        _start_run_history,
+        run_id=int(core_engine.run_stats["analytics_run_id"]),
+        started_at=run_started_at,
         source_mode="extension",
         target_count=getattr(core_engine.cfg, 'NORMAL_TARGET_COUNT', 0),
         trigger_source="ext_reset_stats",
@@ -1399,9 +1476,11 @@ def ext_stop(token: str = Depends(verify_token)):
     core_engine.run_stats["ext_is_running"] = False
     analytics_run_id = int(core_engine.run_stats.get("analytics_run_id") or 0)
     if analytics_run_id:
-        registration_history.finish_run(
+        _run_history_task(
+            "extension-finish-run",
+            _finish_run_history,
             analytics_run_id,
-            notes={
+            {
                 "success": core_engine.run_stats.get("success", 0),
                 "failed": core_engine.run_stats.get("failed", 0),
             },
@@ -1535,7 +1614,8 @@ class ClashDeployReq(BaseModel):
     count: int
 
 class ClashUpdateReq(BaseModel):
-    sub_url: str
+    sub_file_path: Optional[str] = None
+    sub_url: Optional[str] = None
     target: str = "all"
 
 @router.get("/api/clash/status")
@@ -1552,7 +1632,11 @@ async def post_clash_deploy(req: ClashDeployReq, token: str = Depends(verify_tok
 
 @router.post("/api/clash/update")
 async def post_clash_update(req: ClashUpdateReq, token: str = Depends(verify_token)):
-    success, msg = clash_manager.patch_and_update(req.sub_url, req.target)
+    success, msg = clash_manager.patch_and_update(
+        sub_file_path=req.sub_file_path,
+        sub_url=req.sub_url,
+        target=req.target,
+    )
     return {"status": "success" if success else "error", "message": msg}
 
 

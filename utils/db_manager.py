@@ -113,6 +113,7 @@ def init_db():
                 email TEXT UNIQUE,
                 password TEXT,
                 token_data TEXT,
+                analytics_run_id INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -284,6 +285,10 @@ def init_db():
             execute_sql(c, 'ALTER TABLE local_mailboxes ADD COLUMN retry_master INTEGER DEFAULT 0;')
         except Exception:
             pass
+        try:
+            execute_sql(c, 'ALTER TABLE accounts ADD COLUMN analytics_run_id INTEGER DEFAULT 0;')
+        except Exception:
+            pass
         for alter_sql in (
             'ALTER TABLE registration_attempts ADD COLUMN token_wait_duration_ms INTEGER;',
             'ALTER TABLE registration_attempts ADD COLUMN source_node_name TEXT;',
@@ -342,12 +347,29 @@ def save_account_to_db(email: str, password: str, token_json_str: str) -> bool:
         with get_db_conn() as conn:
             c = get_cursor(conn)
             execute_sql(c, '''
-                INSERT OR REPLACE INTO accounts (email, password, token_data)
-                VALUES (?, ?, ?)
-            ''', (email, password, token_json_str))
+                INSERT OR REPLACE INTO accounts (email, password, token_data, analytics_run_id, created_at)
+                VALUES (
+                    ?, ?, ?,
+                    COALESCE((SELECT analytics_run_id FROM accounts WHERE email = ?), 0),
+                    COALESCE((SELECT created_at FROM accounts WHERE email = ?), CURRENT_TIMESTAMP)
+                )
+            ''', (email, password, token_json_str, email, email))
             return True
     except Exception as e:
         print(f"[{cfg.ts()}] [ERROR] 数据库保存失败: {e}")
+        return False
+
+
+def set_account_analytics_run_id(email: str, run_id: int) -> bool:
+    if int(run_id or 0) <= 0:
+        return True
+    try:
+        with get_db_conn() as conn:
+            c = get_cursor(conn)
+            execute_sql(c, "UPDATE accounts SET analytics_run_id = ? WHERE email = ?", (int(run_id or 0), email))
+            return True
+    except Exception as e:
+        print(f"[{cfg.ts()}] [ERROR] 更新账号 run_id 失败: {e}")
         return False
 
 
@@ -502,9 +524,18 @@ def get_all_accounts_with_token(limit: int = 10000) -> list:
     try:
         with get_db_conn() as conn:
             c = get_cursor(conn)
-            execute_sql(c, "SELECT email, password, token_data FROM accounts ORDER BY id DESC LIMIT ?", (limit,))
+            execute_sql(c, "SELECT email, password, token_data, analytics_run_id, created_at FROM accounts ORDER BY id DESC LIMIT ?", (limit,))
             rows = c.fetchall()
-            return [{"email": r[0], "password": r[1], "token_data": r[2]} for r in rows]
+            return [
+                {
+                    "email": r[0],
+                    "password": r[1],
+                    "token_data": r[2],
+                    "analytics_run_id": int(r[3] or 0),
+                    "created_at": str(r[4] or ""),
+                }
+                for r in rows
+            ]
     except Exception as e:
         print(f"[{cfg.ts()}] [ERROR] 提取完整账号数据失败: {e}")
         return []

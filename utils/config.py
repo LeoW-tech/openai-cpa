@@ -311,6 +311,7 @@ HERO_SMS_COUNTRY: str = "US"
 HERO_SMS_SERVICE: str = "openai"
 HERO_SMS_AUTO_PICK_COUNTRY: bool = False
 HERO_SMS_REUSE_PHONE: bool = True
+HERO_SMS_REUSE_MAX_USES: int = 2
 HERO_SMS_VERIFY_ON_REGISTER: bool = False
 HERO_SMS_MAX_PRICE: float = 2.0
 HERO_SMS_MIN_BALANCE: float = 2.0
@@ -324,6 +325,7 @@ _clash_enable: bool = False
 _clash_pool_mode: bool = False
 CLASH_CLUSTER_COUNT: int = 5
 CLASH_SUB_URL: str = ""
+CLASH_SUB_FILE_PATH: str = ""
 WARP_PROXY_LIST: list = []
 _raw_proxy_enable: bool = False
 RAW_PROXY_LIST: list = []
@@ -412,7 +414,7 @@ def reload_all_configs(new_config_dict=None):
     global NORMAL_SLEEP_MIN, NORMAL_SLEEP_MAX, NORMAL_TARGET_COUNT
     global _clash_enable, _clash_pool_mode, WARP_PROXY_LIST, PROXY_QUEUE, PROXY_QUEUE_GENERATION
     global _raw_proxy_enable, RAW_PROXY_LIST
-    global CLASH_CLUSTER_COUNT, CLASH_SUB_URL
+    global CLASH_CLUSTER_COUNT, CLASH_SUB_URL, CLASH_SUB_FILE_PATH
     global ENABLE_SUB2API_MODE, SUB2API_URL, SUB2API_KEY
     global SUB2API_MIN_THRESHOLD, SUB2API_BATCH_COUNT, SUB2API_CHECK_INTERVAL, SUB2API_THREADS, SUB2API_TEST_MODEL
     global SUB2API_SAVE_TO_LOCAL
@@ -422,7 +424,7 @@ def reload_all_configs(new_config_dict=None):
     global SUB2API_ACCOUNT_RATE_MULTIPLIER, SUB2API_ACCOUNT_GROUP_IDS, SUB2API_ENABLE_WS_MODE
     global LUCKMAIL_API_KEY, LUCKMAIL_PREFERRED_DOMAIN, LUCKMAIL_EMAIL_TYPE, LUCKMAIL_VARIANT_MODE, LUCKMAIL_REUSE_PURCHASED, LUCKMAIL_TAG_ID
     global HERO_SMS_ENABLED, HERO_SMS_API_KEY, HERO_SMS_BASE_URL, HERO_SMS_COUNTRY, HERO_SMS_SERVICE
-    global HERO_SMS_AUTO_PICK_COUNTRY, HERO_SMS_REUSE_PHONE, HERO_SMS_MAX_PRICE, HERO_SMS_VERIFY_ON_REGISTER
+    global HERO_SMS_AUTO_PICK_COUNTRY, HERO_SMS_REUSE_PHONE, HERO_SMS_REUSE_MAX_USES, HERO_SMS_MAX_PRICE, HERO_SMS_VERIFY_ON_REGISTER
     global HERO_SMS_MIN_BALANCE, HERO_SMS_MAX_TRIES, HERO_SMS_POLL_TIMEOUT_SEC
     global AI_API_BASE, AI_API_KEY, AI_MODEL, AI_ENABLE_PROFILE
     global CPA_AUTO_CHECK, SUB2API_AUTO_CHECK
@@ -665,6 +667,7 @@ def reload_all_configs(new_config_dict=None):
     _clash_pool_mode = _clash_conf.get("pool_mode", False)
     CLASH_CLUSTER_COUNT = int(_clash_conf.get("cluster_count") or 5)
     CLASH_SUB_URL = str(_clash_conf.get("sub_url") or "").strip()
+    CLASH_SUB_FILE_PATH = str(_clash_conf.get("sub_file_path") or "").strip()
     WARP_PROXY_LIST = _c.get("warp_proxy_list", [])
     _raw_proxy_conf = _c.get("raw_proxy_pool", {})
     _raw_proxy_enable = safe_bool(_raw_proxy_conf.get("enable", False), default=False)
@@ -713,6 +716,10 @@ def reload_all_configs(new_config_dict=None):
     HERO_SMS_SERVICE = _hero_sms_conf.get("service", "dr")
     HERO_SMS_AUTO_PICK_COUNTRY = _hero_sms_conf.get("auto_pick_country", False)
     HERO_SMS_REUSE_PHONE = _hero_sms_conf.get("reuse_phone", True)
+    try:
+        HERO_SMS_REUSE_MAX_USES = max(1, int(_hero_sms_conf.get("reuse_max_uses", 2)))
+    except Exception:
+        HERO_SMS_REUSE_MAX_USES = 2
     HERO_SMS_VERIFY_ON_REGISTER = _hero_sms_conf.get("verify_on_register", False)
 
     try:

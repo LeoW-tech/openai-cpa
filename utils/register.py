@@ -19,7 +19,7 @@ from utils import config as cfg
 from utils import registration_history
 from utils.email_providers import mail_service as _mail_service
 from utils.integrations.hero_sms import _try_verify_phone_via_hero_sms
-from utils.auth_core import generate_payload
+from utils.auth_core import generate_payload, init_auth
 from utils.region_policy import is_openai_region_blocked
 
 get_email_and_token = _mail_service.get_email_and_token
@@ -185,10 +185,24 @@ def _history_event(
         url_key: str = "",
         snapshot: Any = None,
 ) -> None:
-    attempt_id = _analytics_attempt_id(run_ctx)
-    if not attempt_id:
-        registration_history.buffer_pending_event(
-            run_ctx,
+    try:
+        attempt_id = _analytics_attempt_id(run_ctx)
+        if not attempt_id:
+            registration_history.buffer_pending_event(
+                run_ctx,
+                event_type=event_type,
+                phase=phase,
+                elapsed_ms=elapsed_ms,
+                ok_flag=ok_flag,
+                http_status=http_status,
+                reason_code=reason_code,
+                message=message,
+                url_key=url_key,
+                snapshot=snapshot,
+            )
+            return
+        registration_history.record_attempt_event(
+            attempt_id,
             event_type=event_type,
             phase=phase,
             elapsed_ms=elapsed_ms,
@@ -199,27 +213,19 @@ def _history_event(
             url_key=url_key,
             snapshot=snapshot,
         )
-        return
-    registration_history.record_attempt_event(
-        attempt_id,
-        event_type=event_type,
-        phase=phase,
-        elapsed_ms=elapsed_ms,
-        ok_flag=ok_flag,
-        http_status=http_status,
-        reason_code=reason_code,
-        message=message,
-        url_key=url_key,
-        snapshot=snapshot,
-    )
+    except Exception as exc:
+        print(f"[{cfg.ts()}] [WARNING] 注册统计事件写入失败: {exc}")
 
 
 def _history_patch(run_ctx: Optional[dict], **fields: Any) -> None:
-    attempt_id = _analytics_attempt_id(run_ctx)
-    if not attempt_id:
-        registration_history.buffer_pending_patch(run_ctx, **fields)
-        return
-    registration_history.patch_attempt(attempt_id, **fields)
+    try:
+        attempt_id = _analytics_attempt_id(run_ctx)
+        if not attempt_id:
+            registration_history.buffer_pending_patch(run_ctx, **fields)
+            return
+        registration_history.patch_attempt(attempt_id, **fields)
+    except Exception as exc:
+        print(f"[{cfg.ts()}] [WARNING] 注册统计状态写入失败: {exc}")
 
 
 def _record_pending_account_registration(
@@ -548,9 +554,9 @@ def generate_oauth_url(
         "redirect_uri": redirect_uri,
         "scope": scope,
         "state": state,
+        "prompt": "login",
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
-        "prompt": "login",
         "id_token_add_organizations": "true",
         "codex_cli_simplified_flow": "true",
     }
@@ -655,19 +661,9 @@ def _parse_workspace_from_auth_cookie(auth_cookie: str) -> list:
     return claims.get("workspaces") or []
 
 
-def _normalize_proxy_input(proxy: Optional[str]):
-    if isinstance(proxy, (tuple, list)):
-        if len(proxy) >= 2:
-            return proxy[1]
-        if proxy:
-            return proxy[0]
-        return None
-    return proxy
-
-
 def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
     processed_mails: set = set()
-    proxy = cfg.format_docker_url(_normalize_proxy_input(proxy))
+    proxy = cfg.format_docker_url(proxy)
     if proxy and proxy.startswith("socks5://"):
         proxy = proxy.replace("socks5://", "socks5h://")
     proxies = {"http": proxy, "https": proxy} if proxy else None
@@ -690,44 +686,15 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                 )
                 elapsed = time.time() - start
                 loc = (re.search(r"^loc=(.+)$", res.text, re.MULTILINE) or [None, None])[1]
-                ip = (re.search(r"^ip=(.+)$", res.text, re.MULTILINE) or [None, None])[1]
                 if is_openai_region_blocked(loc):
                     raise RuntimeError(f"当前{proxies}代理所在地不支持 OpenAI ({loc})")
                 print(f"[{cfg.ts()}] [INFO] 节点测活成功！地区: {loc} | 延迟: {elapsed:.2f}s")
-                if ip:
-                    geo = registration_history.lookup_geo_for_ip(ip, country_code_hint=loc or "")
-                    _history_patch(
-                        run_ctx,
-                        exit_ip=ip,
-                        geo_country_code=geo.get("country_code") or loc or "",
-                        geo_country_name=geo.get("country_name") or "",
-                        geo_region_name=geo.get("region_name") or "",
-                        geo_city_name=geo.get("city_name") or "",
-                        geo_isp=geo.get("isp") or "",
-                        geo_asn=geo.get("asn") or "",
-                        geo_source=geo.get("source") or "cloudflare-trace",
-                        geo_status=geo.get("status") or "ok",
-                    )
-                    _history_event(
-                        run_ctx,
-                        event_type="exit_ip_resolved",
-                        phase="network",
-                        ok_flag=True,
-                        message=ip,
-                        snapshot={"country_code": loc, "latency_sec": round(elapsed, 3)},
-                    )
             except Exception as e:
                 print(f"[{cfg.ts()}] [ERROR] 代理网络检查失败: {e}")
                 _set_failure(run_ctx, stage="net_check", message=str(e))
                 return None, None
 
-        email_result = get_email_and_token(proxies)
-        if not isinstance(email_result, (tuple, list)) or len(email_result) < 2:
-            print(f"[{cfg.ts()}] [ERROR] 邮箱模块返回值非法: {email_result!r}")
-            _set_failure(run_ctx, stage="email_acquire", message="email provider returned invalid result")
-            return None, None
-
-        email, email_jwt = email_result[0], email_result[1]
+        email, email_jwt = get_email_and_token(proxies)
         if not email:
             _set_failure(run_ctx, stage="email_acquire", message="email acquire failed")
             return None, None
@@ -766,12 +733,16 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
             is_takeover = False
             target_continue_url = ""
             try:
-                s_reg.get(oauth_reg.auth_url, proxies=proxies, verify=_ssl_verify(), timeout=15)
-                did = s_reg.cookies.get("oai-did") or ""
-                if not did:
-                    print(f"[{cfg.ts()}] [WARNING] （{mask_email(email)}）未获取到 oai-did，节点环境可能被关注，请更换IP或节点。")
+                did, current_ua =init_auth(
+                    session=s_reg,
+                    email=email,
+                    masked_email=mask_email(email),
+                    proxies=proxies,
+                    verify=_ssl_verify()
+                )
 
-                current_ua = s_reg.headers.get("User-Agent")
+                if not did or not current_ua:
+                    print(f"[{cfg.ts()}] [WARNING] 未获取到 oai-did，节点环境可能被关注。")
 
                 reg_ctx = {}
 
@@ -974,7 +945,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 _history_patch(run_ctx, last_continue_url=target_continue_url)
                             except Exception:
                                 target_continue_url = ""
-
 
                 except Exception as e:
                     pass
@@ -1702,13 +1672,11 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}）二次安全验证 OTP 校验失败: {code2_resp.status_code}")
                                 _set_failure(run_ctx, stage="oauth_secondary_validate_otp", http_status=code2_resp.status_code)
                                 return None, None
-
                             next_url = str(code2_resp.json().get("continue_url") or "").strip()
                             _history_patch(run_ctx, last_continue_url=next_url)
                             resp, current_url = _follow_redirect_chain_local(s_log, next_url, proxies)
-                    retry_oauth_after_phone_gate = False
-                    retry_oauth_after_phone_gate = False
-                    oauth_trace_error_code = ""
+                    url_code = ""
+                    error_reason = ""
                     while True:
                         if "code=" in current_url:
                             return _submit_callback_with_history(
@@ -1749,12 +1717,9 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 proxies=proxies,
                                 run_ctx=run_ctx,
                             )
-                            create_json = create_account_resp.json() or {}
-                            oauth_trace_error_code = str(create_json.get("error", {}).get("code", "")).strip()
-                            current_url = str(create_json.get("continue_url") or "").strip()
+                            url_code = create_account_resp.json()
+                            current_url = str(create_account_resp.json().get("continue_url") or "").strip()
                             _history_patch(run_ctx, last_continue_url=current_url)
-                            if not current_url:
-                                break
                             continue
 
                         if current_url.endswith("/consent") or current_url.endswith("/workspace"):
@@ -1780,8 +1745,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                             _, final_loc = _follow_redirect_chain_local(s_log, final_url, proxies)
                             current_url = final_loc
                             _history_patch(run_ctx, last_continue_url=current_url)
-                            if not current_url:
-                                break
                             continue
 
                         if "/add-phone" in current_url:
@@ -1797,7 +1760,6 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
                                 message="oauth_add_phone",
                             )
                             if oauth_attempt == 0:
-                                retry_oauth_after_phone_gate = True
                                 break
 
                             print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}） OAuth链路触发风控，进入 HeroSMS 手机号验证流程...")
@@ -1810,13 +1772,7 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                             if not ok or not next_url_or_reason:
                                 print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） {next_url_or_reason}")
-                                current_url = next_url_or_reason if next_url_or_reason else current_url
-                                _set_failure(
-                                    run_ctx,
-                                    stage="oauth_phone_otp",
-                                    message=str(next_url_or_reason),
-                                    continue_url=current_url,
-                                )
+                                error_reason = next_url_or_reason
                                 break
 
                             print(f"[{cfg.ts()}] [INFO] （{mask_email(email)}） 手机验证成功，继续 OAuth 链路: {next_url_or_reason}")
@@ -1833,13 +1789,23 @@ def run(proxy: Optional[str], run_ctx: dict = None) -> tuple:
 
                         break
 
-                    if retry_oauth_after_phone_gate:
-                        continue
-
                 if run_ctx is not None: run_ctx['phone_verify'] = True
-                error_hint = "当前账号被阻断" if oauth_trace_error_code == "identity_provider_mismatch" else ""
-                print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） OAuth 授权链路追踪失败！当前死在网页: {current_url}{error_hint}")
-                _set_failure(run_ctx, stage="oauth_trace", message=current_url or error_hint, continue_url=current_url)
+                try:
+                    url_code = url_code.get("error", {}).get("code")
+                except Exception:
+                    pass
+                if "identity_provider_mismatch" in url_code:
+                    url_code = "当前账号被阻断"
+                else:
+                    url_code = ""
+                print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） OAuth 授权链路追踪失败！当前死在网页: {current_url}")
+                print(f"[{cfg.ts()}] [ERROR] （{mask_email(email)}） 阻断原因: {error_reason}")
+                _set_failure(
+                    run_ctx,
+                    stage="oauth_trace",
+                    message=error_reason or current_url or url_code,
+                    continue_url=current_url,
+                )
                 return None, None
 
             except Exception as e:
