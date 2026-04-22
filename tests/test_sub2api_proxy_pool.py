@@ -205,6 +205,25 @@ class Sub2APIProxyPoolTests(unittest.TestCase):
             self.normalize_sub2api_proxy_urls("http://user:pa,ss@host.example:8080"),
         )
 
+    def test_get_accounts_disables_proxy_inheritance(self):
+        captured = {}
+
+        def fake_get(url, headers=None, params=None, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            response = _FakeResponse(200, {"data": {"items": [], "total": 0}})
+            response.text = '{"data":{"items":[],"total":0}}'
+            return response
+
+        with patch.object(self.client_module.cffi_requests, "get", side_effect=fake_get):
+            client = self.Sub2APIClient(api_url="https://sub2api.example", api_key="demo-key")
+            ok, payload = client.get_accounts(page=2, page_size=10)
+
+        self.assertTrue(ok)
+        self.assertEqual("https://sub2api.example/api/v1/admin/accounts", captured["url"])
+        self.assertEqual(None, captured["kwargs"]["proxies"])
+        self.assertEqual({"data": {"items": [], "total": 0}}, payload)
+
 
 if __name__ == "__main__":
     unittest.main()

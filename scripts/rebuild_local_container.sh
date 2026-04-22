@@ -5,9 +5,11 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_DIR="${PROJECT_ROOT}/data"
 CONFIG_FILE="${DATA_DIR}/config.yaml"
+RELAY_MANAGER="${PROJECT_ROOT}/scripts/manage_local_relays.py"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 CONTAINER_NAME="openai-cpa-local"
 IMAGE_NAME="openai-cpa-local:latest"
+MOUNT_DOCKER_SOCK="${OPENAI_CPA_MOUNT_DOCKER_SOCK:-1}"
 
 find_docker_bin() {
   local candidate=""
@@ -54,6 +56,10 @@ cd "${PROJECT_ROOT}"
 
 mkdir -p "${DATA_DIR}"
 
+if [[ -f "${RELAY_MANAGER}" ]]; then
+  python3 "${RELAY_MANAGER}" restart --project-root "${PROJECT_ROOT}"
+fi
+
 "${DOCKER_BIN}" stop -t 15 "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
 if [[ -f "${CONFIG_FILE}" ]]; then
@@ -62,10 +68,19 @@ fi
 
 "${DOCKER_BIN}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 "${DOCKER_BIN}" build -t "${IMAGE_NAME}" .
-"${DOCKER_BIN}" run -d \
-  --name "${CONTAINER_NAME}" \
-  -p 8000:8000 \
-  -v "${DATA_DIR}:/app/data" \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  --add-host=host.docker.internal:host-gateway \
-  "${IMAGE_NAME}"
+
+docker_run_args=(
+  run -d
+  --name "${CONTAINER_NAME}"
+  -p 8000:8000
+  -v "${DATA_DIR}:/app/data"
+  --add-host=host.docker.internal:host-gateway
+)
+
+if [[ "${MOUNT_DOCKER_SOCK}" != "0" ]]; then
+  docker_run_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
+fi
+
+docker_run_args+=("${IMAGE_NAME}")
+
+"${DOCKER_BIN}" "${docker_run_args[@]}"

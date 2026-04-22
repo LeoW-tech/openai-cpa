@@ -223,7 +223,7 @@ class Sub2APIClient:
             "page_size": page_size,
         }
         try:
-            response = cffi_requests.get(url, headers=self.headers, params=params, **self.request_kwargs)
+            response = cffi_requests.get(url, headers=self.headers, params=params, proxies=None, **self.request_kwargs)
             return self._handle_response(response)
         except Exception as exc:
             logger.error("Get Sub2API accounts failed: %s", exc)

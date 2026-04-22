@@ -129,6 +129,7 @@ createApp({
             cloudPage: 1,
             cloudPageSize: 10,
             cloudTotal: 0,
+            cloudFetchError: '',
             localCheckTimes: {},
             localCloudDetails: {},
             isCloudActionLoading: false,
@@ -400,6 +401,9 @@ createApp({
                 if (!this.config.cpa_mode) {
                     this.config.cpa_mode = {};
                 }
+                if (this.config.cpa_mode.host_relay_port === undefined) {
+                    this.config.cpa_mode.host_relay_port = 38317;
+                }
                 if (!this.config.tg_bot) {
                     this.config.tg_bot = { enable: false, token: '', chat_id: '' };
                 }
@@ -471,6 +475,9 @@ createApp({
                 }
                 if (!this.config.sub2api_mode) {
                     this.config.sub2api_mode = {};
+                }
+                if (this.config.sub2api_mode.host_relay_port === undefined) {
+                    this.config.sub2api_mode.host_relay_port = 38080;
                 }
                 if (this.config.sub2api_mode.account_concurrency === undefined) {
                     this.config.sub2api_mode.account_concurrency = 10;
@@ -1535,6 +1542,7 @@ createApp({
             if (this.cloudFilters.length === 0) {
                 this.cloudAccounts = [];
                 this.cloudTotal = 0;
+                this.cloudFetchError = '';
                 return;
             }
             const types = this.cloudFilters.join(',');
@@ -1542,6 +1550,7 @@ createApp({
                 const res = await this.authFetch(`/api/cloud/accounts?types=${types}&status_filter=${this.cloudStatusFilter}&page=${this.cloudPage}&page_size=${this.cloudPageSize}`);
                 const data = await res.json();
                 if(data.status === 'success') {
+                    this.cloudFetchError = '';
                     this.cloudAccounts = (data.data || []).map(acc => ({
                         ...acc,
                         last_check: this.localCheckTimes[acc.id] || acc.last_check || '-',
@@ -1551,10 +1560,16 @@ createApp({
                     this.cloudTotal = data.total || 0;
                     this.selectedCloud = [];
                 } else {
+                    this.cloudFetchError = data.message || '云端连接失败';
+                    this.cloudAccounts = [];
+                    this.cloudTotal = 0;
                     this.showToast(data.message, "error");
                 }
             } catch (e) {
                 console.error(e);
+                this.cloudFetchError = "获取云端数据失败，请检查网络或远端服务";
+                this.cloudAccounts = [];
+                this.cloudTotal = 0;
                 this.showToast("获取云端数据失败", "error");
             }
         },

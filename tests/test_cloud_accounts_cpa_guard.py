@@ -117,6 +117,26 @@ class CloudAccountsCpaGuardTests(unittest.TestCase):
         self.assertEqual([], result["data"])
         self.assertEqual(0, result["total"])
 
+    def test_cloud_accounts_returns_error_when_sub2api_fetch_fails(self):
+        api_routes = self._reload_api_routes()
+
+        class FakeSub2APIClient:
+            def __init__(self, api_url, api_key):
+                self.api_url = api_url
+                self.api_key = api_key
+
+            def get_all_accounts(self):
+                return False, "connect failed"
+
+        with patch.object(api_routes.cfg, "SUB2API_URL", "http://127.0.0.1:8080"), \
+             patch.object(api_routes.cfg, "SUB2API_KEY", "demo-key"), \
+             patch.object(api_routes, "Sub2APIClient", FakeSub2APIClient):
+            result = api_routes.get_cloud_accounts(types="sub2api", page=1, page_size=50, token="demo-token")
+
+        self.assertEqual("error", result["status"])
+        self.assertIn("Sub2API", result["message"])
+        self.assertIn("connect failed", result["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -71,7 +71,8 @@ class Sub2APIClientProxyBindingTests(unittest.TestCase):
             captured["json"] = json
             return _FakeResponse(status_code=200, payload={"status": "success"})
 
-        with patch.object(sub2api_client.cffi_requests, "post", side_effect=fake_post):
+        with patch.object(sub2api_client.cffi_requests, "post", side_effect=fake_post), \
+             patch.object(sub2api_client.cfg, "get_next_sub2api_proxy_url", return_value=""):
             ok, msg = client.add_account({
                 "email": "demo@example.com",
                 "refresh_token": "refresh-token",

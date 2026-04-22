@@ -11,6 +11,7 @@ import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from utils.proxy_manager import reload_proxy_config
+from utils.local_network import DEFAULT_RELAY_PORTS, rewrite_url_for_host_relay
 try:
     from utils.integrations.sub2api_proxy import get_valid_sub2api_proxy_urls
 except Exception:
@@ -43,6 +44,13 @@ def format_docker_url(url: str) -> str:
         url = url.replace("127.0.0.1", "host.docker.internal")
         url = url.replace("localhost", "host.docker.internal")
     return url
+
+
+def format_container_service_url(url: str, relay_port: int = 0) -> str:
+    formatted = format_docker_url(url)
+    if os.path.exists("/.dockerenv") and relay_port > 0:
+        return rewrite_url_for_host_relay(formatted, relay_port)
+    return formatted
 
 
 def normalize_raw_proxy_entry(entry: str) -> str:
@@ -409,6 +417,7 @@ def reload_all_configs(new_config_dict=None):
     global LOGIN_DELAY_MIN, LOGIN_DELAY_MAX
     global ENABLE_CPA_MODE, SAVE_TO_LOCAL_IN_CPA_MODE
     global CPA_API_URL, CPA_API_TOKEN, MIN_ACCOUNTS_THRESHOLD, BATCH_REG_COUNT
+    global CPA_HOST_RELAY_PORT
     global MIN_REMAINING_WEEKLY_PERCENT, REMOVE_ON_LIMIT_REACHED, REMOVE_DEAD_ACCOUNTS
     global CPA_THREADS, CHECK_INTERVAL_MINUTES, ENABLE_TOKEN_REVIVE
     global NORMAL_SLEEP_MIN, NORMAL_SLEEP_MAX, NORMAL_TARGET_COUNT
@@ -416,6 +425,7 @@ def reload_all_configs(new_config_dict=None):
     global _raw_proxy_enable, RAW_PROXY_LIST
     global CLASH_CLUSTER_COUNT, CLASH_SUB_URL, CLASH_SUB_FILE_PATH
     global ENABLE_SUB2API_MODE, SUB2API_URL, SUB2API_KEY
+    global SUB2API_HOST_RELAY_PORT
     global SUB2API_MIN_THRESHOLD, SUB2API_BATCH_COUNT, SUB2API_CHECK_INTERVAL, SUB2API_THREADS, SUB2API_TEST_MODEL
     global SUB2API_SAVE_TO_LOCAL
     global SUB2API_REMOVE_ON_LIMIT_REACHED, SUB2API_REMOVE_DEAD_ACCOUNTS, SUB2API_ENABLE_TOKEN_REVIVE
@@ -611,7 +621,8 @@ def reload_all_configs(new_config_dict=None):
     _cpa = _c.get("cpa_mode", {})
     ENABLE_CPA_MODE = _cpa.get("enable", False)
     SAVE_TO_LOCAL_IN_CPA_MODE = _cpa.get("save_to_local", True)
-    CPA_API_URL = format_docker_url(str(_cpa.get("api_url", "")).strip()).rstrip("/")
+    CPA_HOST_RELAY_PORT = safe_int(_cpa.get("host_relay_port", DEFAULT_RELAY_PORTS["cpa_mode"]), DEFAULT_RELAY_PORTS["cpa_mode"], minimum=0)
+    CPA_API_URL = format_container_service_url(str(_cpa.get("api_url", "")).strip(), CPA_HOST_RELAY_PORT).rstrip("/")
     CPA_API_TOKEN = _cpa.get("api_token", "")
     MIN_ACCOUNTS_THRESHOLD = _cpa.get("min_accounts_threshold", 30)
     BATCH_REG_COUNT = _cpa.get("batch_reg_count", 1)
@@ -626,7 +637,8 @@ def reload_all_configs(new_config_dict=None):
 
     _sub2api = _c.get("sub2api_mode", {})
     ENABLE_SUB2API_MODE = _sub2api.get("enable", False)
-    SUB2API_URL = format_docker_url(str(_sub2api.get("api_url", "")).strip()).rstrip("/")
+    SUB2API_HOST_RELAY_PORT = safe_int(_sub2api.get("host_relay_port", DEFAULT_RELAY_PORTS["sub2api_mode"]), DEFAULT_RELAY_PORTS["sub2api_mode"], minimum=0)
+    SUB2API_URL = format_container_service_url(str(_sub2api.get("api_url", "")).strip(), SUB2API_HOST_RELAY_PORT).rstrip("/")
     SUB2API_KEY = _sub2api.get("api_key", "")
     SUB2API_MIN_THRESHOLD = _sub2api.get("min_accounts_threshold", 70)
     SUB2API_TEST_MODEL = _sub2api.get("test_model", "")

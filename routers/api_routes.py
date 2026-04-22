@@ -8,6 +8,7 @@ import traceback
 import threading
 import sys
 import subprocess
+import logging
 import yaml
 import urllib.parse
 from datetime import datetime, timezone
@@ -108,6 +109,7 @@ except Exception:
 
     clash_manager = _FallbackClashManager()
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(BASE_DIR, "data", "config.yaml")
@@ -927,25 +929,27 @@ def get_cloud_accounts(types: str = "sub2api,cpa", status_filter: str = Query("a
         if "sub2api" in type_list and getattr(cfg, 'SUB2API_URL', None) and getattr(cfg, 'SUB2API_KEY', None):
             client = Sub2APIClient(api_url=cfg.SUB2API_URL, api_key=cfg.SUB2API_KEY)
             success, raw_sub2_data = client.get_all_accounts()
-            if success:
-                for item in raw_sub2_data:
-                    raw_time = item.get("updated_at", "-")
-                    if raw_time != "-":
-                        try:
-                            raw_time = raw_time.split(".")[0].replace("T", " ")
-                        except:
-                            pass
-                    extra = item.get("extra", {})
-                    combined_data.append({
-                        "id": str(item.get("id", "")), "account_type": "sub2api",
-                        "credential": item.get("name", "未知账号"),
-                        "status": "disabled" if item.get("status") == "inactive" else (
-                            "active" if item.get("status") == "active" else "dead"),
-                        "last_check": raw_time,
-                        "details": {"plan_type": item.get("credentials", {}).get("plan_type", "未知"),
-                                    "codex_5h_used_percent": extra.get("codex_5h_used_percent", 0),
-                                    "codex_7d_used_percent": extra.get("codex_7d_used_percent", 0)}
-                    })
+            if not success:
+                logger.error("Sub2API 云端库存拉取失败 (url=%s): %s", getattr(cfg, 'SUB2API_URL', ''), raw_sub2_data)
+                return {"status": "error", "message": f"Sub2API 云端库存读取失败：{raw_sub2_data}"}
+            for item in raw_sub2_data:
+                raw_time = item.get("updated_at", "-")
+                if raw_time != "-":
+                    try:
+                        raw_time = raw_time.split(".")[0].replace("T", " ")
+                    except:
+                        pass
+                extra = item.get("extra", {})
+                combined_data.append({
+                    "id": str(item.get("id", "")), "account_type": "sub2api",
+                    "credential": item.get("name", "未知账号"),
+                    "status": "disabled" if item.get("status") == "inactive" else (
+                        "active" if item.get("status") == "active" else "dead"),
+                    "last_check": raw_time,
+                    "details": {"plan_type": item.get("credentials", {}).get("plan_type", "未知"),
+                                "codex_5h_used_percent": extra.get("codex_5h_used_percent", 0),
+                                "codex_7d_used_percent": extra.get("codex_7d_used_percent", 0)}
+                })
 
         if "cpa" in type_list and _is_cpa_cloud_enabled():
             from curl_cffi import requests

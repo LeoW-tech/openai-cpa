@@ -230,6 +230,8 @@ cpa_mode:
   save_to_local: true
   # CPA的访问地址
   api_url: "http://your-domain.com:8317"
+  # mac 容器模式下，若 CPA 在局域网其他机器上，宿主机 relay 的监听端口
+  host_relay_port: 38317
   # CPA登陆密码
   api_token: "xxxx"
   # 仓库存量低于此值时触发补货
@@ -258,6 +260,8 @@ sub2api_mode:
   auto_check: true
   save_to_local: true
   api_url: 
+  # mac 容器模式下，若 Sub2API 在局域网其他机器上，宿主机 relay 的监听端口
+  host_relay_port: 38080
   api_key: 
   min_accounts_threshold: 20
   batch_reg_count: 1
