@@ -1,5 +1,6 @@
 import copy
 import os
+import socket
 
 import docker
 import requests
@@ -83,6 +84,8 @@ def _default_config():
 
 def _apply_runtime_patch(config):
     patched = copy.deepcopy(config or {})
+    for key in ("port", "socks-port", "external-controller", "allow-lan"):
+        patched.pop(key, None)
     patched.update(
         {
             "allow-lan": True,
@@ -317,17 +320,24 @@ def _ensure_config_file(base_path, name, template_config=None):
         raise ValueError(f"{cfg_file} 是目录，无法作为 Mihomo 配置文件使用")
 
     current_config = _load_yaml_file(cfg_file) if os.path.exists(cfg_file) else None
-    should_seed_from_template = template_config is not None and not _is_subscription_config(current_config)
+    group_keyword = _pool_group_name()
+    should_seed_from_template = template_config is not None and (
+        not _is_subscription_config(current_config)
+        or (group_keyword and not _config_has_target_group(current_config, group_keyword))
+    )
+    config_changed = False
 
     if should_seed_from_template:
         _write_yaml_file(cfg_file, _apply_runtime_patch(template_config))
+        config_changed = True
     elif current_config is None:
         _write_yaml_file(cfg_file, _default_config())
+        config_changed = True
 
     if not os.path.isfile(cfg_file):
         raise ValueError(f"{cfg_file} 不存在或不可读")
 
-    return inst_dir, cfg_file
+    return inst_dir, cfg_file, config_changed
 
 def _desired_ports(index):
     return {
@@ -401,13 +411,66 @@ def _normalize_port_bindings(container):
     return normalized
 
 
-def _needs_recreate(container, name, index, host_base_path):
+def _probe_controller_api(host_port):
+    if not host_port:
+        return False
+
+    try:
+        response = requests.get(f"http://127.0.0.1:{host_port}/proxies", timeout=2)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+def _probe_proxy_port(host_port):
+    if not host_port:
+        return False
+
+    try:
+        with socket.create_connection(("127.0.0.1", int(host_port)), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def _probe_instance_runtime(container):
+    normalized_ports = _normalize_port_bindings(container)
+    controller_port = normalized_ports.get("9090/tcp")
+    proxy_port = normalized_ports.get("7890/tcp")
+    return {
+        "controller_port": controller_port,
+        "proxy_port": proxy_port,
+        "controller_api_ok": _probe_controller_api(controller_port),
+        "proxy_port_ok": _probe_proxy_port(proxy_port),
+    }
+
+
+def _needs_recreate(container, name, index, host_base_path, config_status=None, runtime_health=None):
     desired_mount = ("bind", os.path.join(host_base_path, name), CONTAINER_CONFIG_DIR)
     mount_set = set(_normalize_mounts(container))
     if desired_mount not in mount_set:
         return True
 
-    return _normalize_port_bindings(container) != _desired_ports(index)
+    if _normalize_port_bindings(container) != _desired_ports(index):
+        return True
+
+    if getattr(container, "status", "") != "running":
+        return True
+
+    if config_status:
+        if not config_status.get("config_exists", False):
+            return True
+        has_target_group = config_status.get("has_target_group")
+        if has_target_group is False:
+            return True
+
+    runtime = runtime_health if runtime_health is not None else _probe_instance_runtime(container)
+    if not runtime.get("controller_api_ok", False):
+        return True
+    if not runtime.get("proxy_port_ok", False):
+        return True
+
+    return False
 
 
 def _sorted_clash_containers(client):
@@ -427,10 +490,17 @@ def get_pool_status():
     config_status, groups, health = _collect_config_health(BASE_PATH, instance_names)
 
     instances = []
+    instances_api_unreachable = []
+    instances_proxy_unreachable = []
     for c in containers:
         p_map = c.attrs.get("HostConfig", {}).get("PortBindings", {})
         ports = [f"{b[0]['HostPort']}->{p.split('/')[0]}" for p, b in p_map.items() if b]
         status = config_status.get(c.name, {})
+        runtime = _probe_instance_runtime(c)
+        if not runtime["controller_api_ok"]:
+            instances_api_unreachable.append(c.name)
+        if not runtime["proxy_port_ok"]:
+            instances_proxy_unreachable.append(c.name)
         instances.append(
             {
                 "name": c.name,
@@ -439,9 +509,13 @@ def get_pool_status():
                 "config_exists": status.get("config_exists", False),
                 "has_subscription_config": status.get("has_subscription_config", False),
                 "has_target_group": status.get("has_target_group"),
+                "controller_api_ok": runtime["controller_api_ok"],
+                "proxy_port_ok": runtime["proxy_port_ok"],
             }
         )
 
+    health["instances_api_unreachable"] = instances_api_unreachable
+    health["instances_proxy_unreachable"] = instances_proxy_unreachable
     return {"instances": instances, "groups": groups, "health": health}
 
 
@@ -469,7 +543,7 @@ def deploy_clash_pool(count):
     for i in range(1, count + 1):
         name = _instance_name(i)
         try:
-            _ensure_config_file(BASE_PATH, name, template_config=template_config)
+            _, cfg_file, config_changed = _ensure_config_file(BASE_PATH, name, template_config=template_config)
         except ValueError as exc:
             return False, str(exc)
 
@@ -477,7 +551,20 @@ def deploy_clash_pool(count):
         container = None
         try:
             container = client.containers.get(name)
-            recreate = _needs_recreate(container, name, i, host_base_path)
+            current_config = _load_yaml_file(cfg_file)
+            config_status = {
+                "config_exists": current_config is not None,
+                "has_target_group": _config_has_target_group(current_config, _pool_group_name()) if _pool_group_name() else None,
+            }
+            runtime_health = _probe_instance_runtime(container)
+            recreate = config_changed or _needs_recreate(
+                container,
+                name,
+                i,
+                host_base_path,
+                config_status=config_status,
+                runtime_health=runtime_health,
+            )
         except docker.errors.NotFound:
             recreate = True
 

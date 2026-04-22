@@ -6,6 +6,8 @@ from datetime import datetime
 import yaml
 import os
 import re
+import socket
+import ipaddress
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from utils.region_policy import is_openai_region_blocked
@@ -21,11 +23,33 @@ NODE_BLACKLIST = []
 _IS_IN_DOCKER = os.path.exists('/.dockerenv')
 _global_switch_lock = threading.Lock()
 _node_cache_lock = threading.Lock()
+_liveness_result_lock = threading.Lock()
+_dns_cache_lock = threading.Lock()
 _last_switch_time = 0
 _last_success_nodes = {}
+_last_liveness_results = {}
+_dns_resolve_cache = {}
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(CURRENT_DIR)
 DOCKER_LOOPBACK_REWRITE_DISABLE_ENV = "OPENAI_CPA_DISABLE_DOCKER_LOOPBACK_REWRITE"
+LIVENESS_PROBE_TIMEOUT = 5
+LIVENESS_PROBES = (
+    {
+        "name": "HTTP 204",
+        "url": "http://www.gstatic.com/generate_204",
+        "success_codes": {200, 204},
+    },
+    {
+        "name": "HTTPS 204",
+        "url": "https://www.google.com/generate_204",
+        "success_codes": {200, 204},
+    },
+)
+TRACE_PROBE = {
+    "name": "Cloudflare Trace",
+    "url": "https://cloudflare.com/cdn-cgi/trace",
+    "success_codes": {200},
+}
 
 
 def _docker_loopback_rewrite_disabled() -> bool:
@@ -126,6 +150,18 @@ def get_last_success_node_name(proxy_url: str = None):
     with _node_cache_lock:
         return _last_success_nodes.get(key)
 
+
+def _record_liveness_result(proxy_url: str = None, result: dict = None) -> None:
+    key = _node_cache_key(proxy_url)
+    with _liveness_result_lock:
+        _last_liveness_results[key] = dict(result or {})
+
+
+def get_last_liveness_result(proxy_url: str = None):
+    key = _node_cache_key(proxy_url)
+    with _liveness_result_lock:
+        return dict(_last_liveness_results.get(key) or {})
+
 def _pick_switchable_nodes(valid_nodes, current_node):
     """优先避开当前正在使用的节点，确保顺序任务切换到新出口。"""
     current = str(current_node or "").strip()
@@ -148,31 +184,164 @@ def _is_leaf_proxy(proxies_data, proxy_name):
         return False
     return True
 
-def test_proxy_liveness(proxy_url=None):
-    """测试当前代理是否可用 (脱敏)"""
+
+def _is_ip_address(host: str) -> bool:
+    try:
+        ipaddress.ip_address(str(host or "").strip())
+        return True
+    except ValueError:
+        return False
+
+
+def _hostname_resolvable(host: str) -> bool:
+    normalized = str(host or "").strip()
+    if not normalized or _is_ip_address(normalized):
+        return True
+
+    with _dns_cache_lock:
+        if normalized in _dns_resolve_cache:
+            return _dns_resolve_cache[normalized]
+
+    try:
+        socket.getaddrinfo(normalized, None)
+        resolved = True
+    except socket.gaierror:
+        resolved = False
+
+    with _dns_cache_lock:
+        _dns_resolve_cache[normalized] = resolved
+    return resolved
+
+
+def _filter_dns_resolvable_nodes(proxies_data, nodes, display_name):
+    filtered_nodes = []
+    skipped = []
+
+    for node_name in nodes:
+        server = str((proxies_data.get(node_name) or {}).get("server") or "").strip()
+        if server and not _hostname_resolvable(server):
+            skipped.append((node_name, server))
+            print(
+                f"[{ts()}] [代理池] {display_name} 跳过节点: "
+                f"[{clean_for_log(node_name)}]，上游域名无法解析 ({server})"
+            )
+            continue
+        filtered_nodes.append(node_name)
+
+    return filtered_nodes, skipped
+
+
+def _build_probe_result(ok: bool, reason: str, **extra):
+    result = {"ok": ok, "reason": reason}
+    result.update(extra)
+    return result
+
+
+def _extract_loc_from_trace(text: str) -> str:
+    for line in str(text or "").split("\n"):
+        if line.startswith("loc="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _probe_proxy_liveness(proxy_url=None):
     raw_url = proxy_url if proxy_url else LOCAL_PROXY_URL
     target_proxy = format_docker_url(raw_url)
     proxies = {"http": target_proxy, "https": target_proxy}
-    display_name = get_display_name(proxy_url if proxy_url else LOCAL_PROXY_URL)
-    
-    try:
-        res = std_requests.get("https://cloudflare.com/cdn-cgi/trace", proxies=proxies, timeout=5)
-        if res.status_code == 200:
-            loc = "UNKNOWN"
-            for line in res.text.split('\n'):
-                if line.startswith("loc="):
-                    loc = line.split("=")[1].strip()
 
-            if is_openai_region_blocked(loc):
-                print(f"[{ts()}] [代理测活] {display_name} 地区受限 ({loc})，弃用！")
-                return False
-                
-            print(f"[{ts()}] [代理测活] {display_name} 成功！地区 ({loc})，延迟: {res.elapsed.total_seconds():.2f}s")
-            return True
-        return False
-    except Exception:
-        print(f"[{ts()}] [代理测活] {display_name} 链路中断或超时。")
-        return False
+    for probe in LIVENESS_PROBES:
+        try:
+            response = std_requests.get(
+                probe["url"],
+                proxies=proxies,
+                timeout=LIVENESS_PROBE_TIMEOUT,
+                allow_redirects=False,
+            )
+        except Exception as exc:
+            continue
+
+        if response.status_code not in probe["success_codes"]:
+            continue
+
+        latency = None
+        if getattr(response, "elapsed", None) is not None:
+            try:
+                latency = response.elapsed.total_seconds()
+            except Exception:
+                latency = None
+
+        trace_error = None
+        try:
+            trace_response = std_requests.get(
+                TRACE_PROBE["url"],
+                proxies=proxies,
+                timeout=LIVENESS_PROBE_TIMEOUT,
+                allow_redirects=False,
+            )
+            if trace_response.status_code in TRACE_PROBE["success_codes"]:
+                loc = _extract_loc_from_trace(trace_response.text)
+                if loc and is_openai_region_blocked(loc):
+                    return _build_probe_result(
+                        False,
+                        "region_blocked",
+                        probe=TRACE_PROBE["name"],
+                        loc=loc,
+                        latency=latency,
+                    )
+                if loc:
+                    return _build_probe_result(
+                        True,
+                        "ok",
+                        probe=TRACE_PROBE["name"],
+                        loc=loc,
+                        latency=latency,
+                    )
+        except Exception as exc:
+            trace_error = str(exc)
+
+        return _build_probe_result(
+            True,
+            "region_unknown",
+            probe=probe["name"],
+            latency=latency,
+            detail=trace_error or "trace_unavailable",
+        )
+
+    return _build_probe_result(False, "probe_failed", detail="all_probes_failed")
+
+
+def _log_liveness_result(display_name: str, result: dict) -> None:
+    reason = result.get("reason")
+    if reason == "ok":
+        loc = result.get("loc", "UNKNOWN")
+        latency = result.get("latency")
+        latency_text = f"{latency:.2f}s" if isinstance(latency, (int, float)) else "未知"
+        print(f"[{ts()}] [代理测活] {display_name} 成功！地区 ({loc})，延迟: {latency_text}")
+        return
+
+    if reason == "region_unknown":
+        latency = result.get("latency")
+        latency_text = f"{latency:.2f}s" if isinstance(latency, (int, float)) else "未知"
+        print(
+            f"[{ts()}] [代理测活] {display_name} 代理可通但地区未知，"
+            f"探针: {result.get('probe', 'UNKNOWN')}，延迟: {latency_text}"
+        )
+        return
+
+    if reason == "region_blocked":
+        print(f"[{ts()}] [代理测活] {display_name} 地区受限 ({result.get('loc', 'UNKNOWN')})，弃用！")
+        return
+
+    detail = result.get("detail", "unknown")
+    print(f"[{ts()}] [代理测活] {display_name} 探针目标失败 ({detail})。")
+
+def test_proxy_liveness(proxy_url=None):
+    """测试当前代理是否可用 (脱敏)"""
+    display_name = get_display_name(proxy_url if proxy_url else LOCAL_PROXY_URL)
+    result = _probe_proxy_liveness(proxy_url)
+    _record_liveness_result(proxy_url, result)
+    _log_liveness_result(display_name, result)
+    return bool(result.get("ok"))
 
 
 def smart_switch_node(proxy_url=None):
@@ -240,6 +409,14 @@ def _do_smart_switch(proxy_url=None):
             return False
 
         switchable_nodes = _pick_switchable_nodes(valid_nodes, current_node)
+        switchable_nodes, dns_skipped = _filter_dns_resolvable_nodes(proxies_data, switchable_nodes, display_name)
+
+        if not switchable_nodes:
+            if dns_skipped:
+                print(f"[{ts()}] [ERROR] {display_name} 全部候选节点 DNS 不可解析。")
+            else:
+                print(f"[{ts()}] [ERROR] {display_name} 过滤后无可切换节点。")
+            return False
 
         if FASTEST_MODE:
             print(f"\n[{ts()}] [代理池] {display_name} 开启优选模式，并发测速 {len(switchable_nodes)} 个节点...")
@@ -290,7 +467,11 @@ def _do_smart_switch(proxy_url=None):
                             if test_proxy_liveness(proxy_url):
                                 _record_success_node(proxy_url, best_node)
                                 return True
-                            print(f"[{ts()}] [代理池] {display_name} 最快节点测活失败，回退到随机抽卡模式...")
+                            failure = get_last_liveness_result(proxy_url)
+                            print(
+                                f"[{ts()}] [代理池] {display_name} 最快节点测活失败 "
+                                f"({failure.get('reason', 'unknown')})，回退到随机抽卡模式..."
+                            )
                     else:
                         print(f"[{ts()}] [代理池] {display_name} 所有节点均超时，回退到随机抽卡模式...")
             except Exception as e:
@@ -312,7 +493,11 @@ def _do_smart_switch(proxy_url=None):
                 if test_proxy_liveness(proxy_url):
                     _record_success_node(proxy_url, selected_node)
                     return True
-                print(f"[{ts()}] [代理池] {display_name} 测活失败，重新抽卡...")
+                failure = get_last_liveness_result(proxy_url)
+                print(
+                    f"[{ts()}] [代理池] {display_name} 测活失败 "
+                    f"({failure.get('reason', 'unknown')})，重新抽卡..."
+                )
             else:
                 print(f"[{ts()}] [代理池] {display_name} 指令下发失败 (HTTP {switch_resp.status_code})。")
                 
