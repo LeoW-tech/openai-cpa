@@ -621,9 +621,8 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
             
     else:
         with _stats_lock: run_stats["success"] += 1
-        token_data = _apply_sub2api_proxy_name(json.loads(token_json_str), run_ctx)
+        token_data = json.loads(token_json_str)
         account_email = token_data.get("email", "unknown")
-        token_json_str = json.dumps(token_data, ensure_ascii=False, separators=(",", ":"))
         source_mode = _resolve_source_mode(cpa_upload=cpa_upload, run_ctx=run_ctx)
         ensured_attempt_id = registration_history.ensure_attempt(
             run_ctx,
@@ -769,16 +768,10 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
             error_message="missing attempt at finalization",
             payload={"ret_status": ret_status},
         )
-    if (
-        getattr(cfg, "EMAIL_API_MODE", "") == "local_microsoft"
-        and last_email
-        and hasattr(mail_service, "release_local_microsoft_listener")
-    ):
-        mail_service.release_local_microsoft_listener(last_email)
     return ret_status
 
 
-def _apply_sub2api_proxy_name(token_data: dict, run_ctx: dict = None, proxy_url: str = None) -> dict:
+def _build_sub2api_push_token_data(token_data: dict, run_ctx: dict = None, proxy_url: str = None) -> dict:
     if not isinstance(token_data, dict):
         return token_data
 
@@ -818,7 +811,7 @@ def add_result_account_to_sub2api(client: Any, result: Any, run_ctx: dict = None
     if not result or not isinstance(result, (tuple, list)) or not result[0]:
         return False, "missing token result", None
 
-    token_dict = _apply_sub2api_proxy_name(json.loads(result[0]), run_ctx, proxy_url)
+    token_dict = _build_sub2api_push_token_data(json.loads(result[0]), run_ctx, proxy_url)
     ok, msg = client.add_account(token_dict)
     return ok, msg, token_dict
 

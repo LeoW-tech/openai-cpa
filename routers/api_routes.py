@@ -1320,16 +1320,23 @@ def ext_submit_result(req: ExtResultReq, token: str = Depends(verify_token)):
                 print(f"换取 Token 失败: {e}")
                 return {"status": "error", "message": "Token 换取失败"}
         history_req = req.model_copy(update={"token_data": token_json})
-        attempt_id = registration_history.record_extension_result(
-            history_req,
-            run_id=int(core_engine.run_stats.get("analytics_run_id") or 0),
-        )
+        attempt_id = 0
+        try:
+            attempt_id = registration_history.record_extension_result(
+                history_req,
+                run_id=int(core_engine.run_stats.get("analytics_run_id") or 0),
+            )
+        except Exception as e:
+            print(f"[{cfg.ts()}] [WARNING] 插件成功上报历史写入失败: {e}")
         saved_ok = db_manager.save_account_to_db(req.email, req.password, token_json)
         if attempt_id:
             patch_payload = {"local_save_ok": 1 if saved_ok else 0}
             if saved_ok:
                 patch_payload["linked_account_created_at"] = db_manager.get_account_created_at(req.email)
-            registration_history.patch_attempt(attempt_id, **patch_payload)
+            try:
+                registration_history.patch_attempt(attempt_id, **patch_payload)
+            except Exception as e:
+                print(f"[{cfg.ts()}] [WARNING] 插件成功上报历史补丁失败: {e}")
         core_engine.run_stats['success'] = core_engine.run_stats.get('success', 0) + 1
 
         return {"status": "success", "message": "战利品已入库"}
@@ -1341,10 +1348,13 @@ def ext_submit_result(req: ExtResultReq, token: str = Depends(verify_token)):
             is_dead_account = True
         elif req.error_type == 'pwd_blocked':
             core_engine.run_stats['pwd_blocked'] = core_engine.run_stats.get('pwd_blocked', 0) + 1
-        registration_history.record_extension_result(
-            req,
-            run_id=int(core_engine.run_stats.get("analytics_run_id") or 0),
-        )
+        try:
+            registration_history.record_extension_result(
+                req,
+                run_id=int(core_engine.run_stats.get("analytics_run_id") or 0),
+            )
+        except Exception as e:
+            print(f"[{cfg.ts()}] [WARNING] 插件失败上报历史写入失败: {e}")
         if is_dead_account and getattr(cfg, "EMAIL_API_MODE", "") == "local_microsoft" and req.email:
             db_manager.update_local_mailbox_status(req.email, 3)
             print(f"[{cfg.ts()}] [WARNING] 插件上报邮箱不可用，已将邮箱标记为死号: {req.email}")

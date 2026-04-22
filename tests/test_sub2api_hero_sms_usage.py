@@ -107,7 +107,7 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
         self.assertEqual("success", status)
         self.assertIs(False, run_ctx["local_account_saved"])
 
-    def test_handle_registration_result_persists_sub2api_proxy_name_into_token_data(self):
+    def test_handle_registration_result_keeps_original_token_data_unchanged(self):
         core_engine = self._reload_core_engine()
         result = (json.dumps({"email": "demo@example.com"}), "Password123!")
 
@@ -119,7 +119,7 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
 
         self.assertEqual("success", status)
         saved_token_data = json.loads(save_account.call_args.args[2])
-        self.assertEqual("🇯🇵 日本W03 | IEPL", saved_token_data["sub2api_proxy_name"])
+        self.assertEqual({"email": "demo@example.com"}, saved_token_data)
 
     def test_reload_core_engine_does_not_stack_print_wrapper(self):
         first = self._reload_core_engine()

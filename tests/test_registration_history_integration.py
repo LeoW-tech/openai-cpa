@@ -24,6 +24,8 @@ class _FakeHTTPException(Exception):
 
 
 class RegistrationHistoryIntegrationTests(unittest.TestCase):
+    DEMO_PASSWORD = "__TEST_PASSWORD_PLACEHOLDER__"
+
     def setUp(self):
         fake_requests_module = types.SimpleNamespace(
             get=None,
@@ -99,7 +101,7 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
 
     def test_handle_registration_result_finishes_history_attempt(self):
         core_engine = self._reload_core_engine()
-        demo_password = "unit-test-pass"
+        demo_password = self.DEMO_PASSWORD
         result = (json.dumps({"email": "demo@example.com"}), demo_password)
 
         with patch.object(core_engine.db_manager, "save_account_to_db", return_value=True):
@@ -107,25 +109,23 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
                 with patch.object(core_engine.cfg, "EMAIL_API_MODE", "local_microsoft"):
                     with patch.object(core_engine.mail_service, "get_last_email", return_value="demo@example.com"):
                         with patch.object(core_engine.registration_history, "finish_attempt") as finish_attempt:
-                            with patch.object(core_engine.mail_service, "release_local_microsoft_listener", create=True) as release_listener:
-                                run_ctx = {
-                                    "analytics_attempt_id": 77,
-                                    "analytics_started_monotonic": 100.0,
-                                    "phone_gate_hit": True,
-                                    "phone_otp_entered": True,
-                                    "phone_otp_success": True,
-                                    "sub2api_proxy_name": "JP-01",
-                                }
-                                with patch.object(core_engine.time, "time", return_value=104.25):
-                                    status = core_engine.handle_registration_result(
-                                        result,
-                                        cpa_upload=False,
-                                        run_ctx=run_ctx,
-                                    )
+                            run_ctx = {
+                                "analytics_attempt_id": 77,
+                                "analytics_started_monotonic": 100.0,
+                                "phone_gate_hit": True,
+                                "phone_otp_entered": True,
+                                "phone_otp_success": True,
+                                "sub2api_proxy_name": "JP-01",
+                            }
+                            with patch.object(core_engine.time, "time", return_value=104.25):
+                                status = core_engine.handle_registration_result(
+                                    result,
+                                    cpa_upload=False,
+                                    run_ctx=run_ctx,
+                                )
 
         self.assertEqual("success", status)
         finish_attempt.assert_called_once()
-        release_listener.assert_called_once_with("demo@example.com")
         kwargs = finish_attempt.call_args.kwargs
         self.assertEqual(77, finish_attempt.call_args.args[0])
         self.assertEqual("success", kwargs["final_status"])
@@ -139,7 +139,7 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
 
     def test_handle_registration_result_ensures_attempt_before_local_save(self):
         core_engine = self._reload_core_engine()
-        result = (json.dumps({"email": "demo@example.com"}), "unit-test-pass")
+        result = (json.dumps({"email": "demo@example.com"}), self.DEMO_PASSWORD)
         calls = []
 
         def _ensure_attempt(run_ctx, **kwargs):
@@ -170,7 +170,7 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
 
     def test_ext_submit_result_records_history_for_legacy_payload(self):
         api_routes = self._reload_api_routes()
-        demo_password = "unit-test-pass"
+        demo_password = self.DEMO_PASSWORD
         calls = []
 
         def _record_extension(req, run_id=0):
@@ -207,6 +207,50 @@ class RegistrationHistoryIntegrationTests(unittest.TestCase):
         self.assertEqual("demo@example.com", call_req.email)
         self.assertEqual(("history", json.dumps({"email": "demo@example.com"})), calls[0])
         self.assertEqual(("save", json.dumps({"email": "demo@example.com"})), calls[1])
+
+    def test_ext_submit_result_success_keeps_main_path_when_history_write_fails(self):
+        api_routes = self._reload_api_routes()
+
+        with patch.object(api_routes.db_manager, "save_account_to_db", return_value=True) as save_account:
+            with patch.object(
+                api_routes.registration_history,
+                "record_extension_result",
+                side_effect=RuntimeError("history-boom"),
+            ):
+                result = api_routes.ext_submit_result(
+                    api_routes.ExtResultReq(
+                        status="success",
+                        task_id="TASK-3",
+                        email="demo@example.com",
+                        password=self.DEMO_PASSWORD,
+                        token_data=json.dumps({"email": "demo@example.com"}),
+                    ),
+                    token="demo-token",
+                )
+
+        self.assertEqual({"status": "success", "message": "战利品已入库"}, result)
+        save_account.assert_called_once()
+
+    def test_ext_submit_result_failure_keeps_main_path_when_history_write_fails(self):
+        api_routes = self._reload_api_routes()
+
+        with patch.object(
+            api_routes.registration_history,
+            "record_extension_result",
+            side_effect=RuntimeError("history-boom"),
+        ):
+            result = api_routes.ext_submit_result(
+                api_routes.ExtResultReq(
+                    status="failed",
+                    task_id="TASK-4",
+                    email="demo@example.com",
+                    password=self.DEMO_PASSWORD,
+                    error_type="phone_verify",
+                ),
+                token="demo-token",
+            )
+
+        self.assertEqual({"status": "success", "message": "异常统计已录入看板"}, result)
 
     def test_ext_submit_result_records_history_before_local_save_after_callback_exchange(self):
         api_routes = self._reload_api_routes()
