@@ -30,6 +30,7 @@ data
 utils/auth_core/
 !utils/auth_core.pyd
 test.py
+aitest.py
 
 # 本地迁移/冷备份产物
 .migration-artifacts/

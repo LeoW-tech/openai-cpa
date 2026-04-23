@@ -408,7 +408,7 @@ def get_account_created_at(email: str) -> str:
             row = c.fetchone()
             return str((row[0] if row else "") or "")
     except Exception as e:
-        print(f"[{ts()}] [ERROR] 读取账号创建时间失败: {e}")
+        print(f"[{cfg.ts()}] [ERROR] 读取账号创建时间失败: {e}")
         return ""
 
 

@@ -46,6 +46,8 @@ class ProxyIMAP4_SSL(imaplib.IMAP4_SSL):
         return sock
 
 luckmail_lock = threading.Lock()
+empty_retry_count = 0
+empty_lock = threading.Lock()
 
 _CM_TOKEN_CACHE: Optional[str] = None
 
@@ -446,9 +448,24 @@ def get_email_and_token(proxies: Any = None) -> tuple:
 
         mailbox_info = ms_service.get_unused_mailbox()
         if not mailbox_info:
-            cfg.POOL_EXHAUSTED = True
-            print(f"[{cfg.ts()}] [WARNING] 微软邮箱库已耗尽，请前往前端导入更多账号。")
+            global empty_retry_count
+            with empty_lock:
+                empty_retry_count += 1
+                if empty_retry_count >= cfg.REG_THREADS:
+                    cfg.POOL_EXHAUSTED = True
+                    print(
+                        f"[{cfg.ts()}] [WARNING] {cfg.REG_THREADS} 个线程全都没拿到邮箱，微软邮箱库已耗尽，"
+                        "程序将自动停止，请前往微软邮箱库导入更多账号！"
+                    )
+                else:
+                    print(
+                        f"[{cfg.ts()}] [WARNING] 当前线程未拿到邮箱 "
+                        f"(失败线程/总线程: {empty_retry_count}/{cfg.REG_THREADS})，将跳过等待下一轮。"
+                    )
             return None, None
+
+        with empty_lock:
+            empty_retry_count = 0
 
         email = mailbox_info["email"]
         set_last_email(email)
