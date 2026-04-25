@@ -14,31 +14,32 @@ from typing import Optional, Any
 from fastapi import APIRouter, Depends, Query, Request, WebSocket, HTTPException, Header
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-from cachetools import TTLCache
 
-from global_state import VALID_TOKENS, CLUSTER_NODES, NODE_COMMANDS, cluster_lock, log_history, engine, verify_token, worker_status, append_log
+from global_state import VALID_TOKENS, CLUSTER_NODES, NODE_COMMANDS, cluster_lock, log_history, engine, verify_token, worker_status
+try:
+    from global_state import append_log
+except ImportError:
+    def append_log(*args, **kwargs):
+        return None
 from utils import core_engine, db_manager
 from utils.config import reload_all_configs
 from utils.integrations.tg_notifier import send_tg_msg_async
+try:
+    from utils.auth_core import code_pool
+except Exception:
+    code_pool = {}
 import utils.config as cfg
 
 router = APIRouter()
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-processed_msgs = TTLCache(maxsize=50000, ttl=3600)
-code_pool = TTLCache(maxsize=20000, ttl=60)
+processed_msgs = {}
 cache_lock = asyncio.Lock()
 
 class DummyArgs:
     def __init__(self, proxy=None, once=False):
         self.proxy = proxy
         self.once = once
-
-class EmailWebhookReq(BaseModel):
-    message_id: str
-    to_addr: str
-    raw_content: str
-    from_addr: Optional[str] = None
 
 class LoginData(BaseModel): password: str
 class ClusterUploadAccountsReq(BaseModel): node_name: str; secret: str; accounts: list
@@ -56,6 +57,13 @@ class ExtResultReq(BaseModel):
     code_verifier: Optional[str] = ""
     expected_state: Optional[str] = ""
     error_type: Optional[str] = "failed"
+
+
+class EmailWebhookReq(BaseModel):
+    message_id: str
+    to_addr: str
+    raw_content: str
+    from_addr: Optional[str] = None
 
 
 def _sanitize_local_microsoft_config(local_ms: Any) -> dict:
@@ -574,7 +582,6 @@ def ext_stop(token: str = Depends(verify_token)):
     core_engine.run_stats["ext_is_running"] = False
     return {"status": "success"}
 
-@router.post("/api/webhook/email")
 async def receive_email_webhook(req: EmailWebhookReq, x_webhook_secret: str = Header(None)):
     freemail_enabled = bool(getattr(core_engine.cfg, 'FREEMAIL_LOCAL_WEBHOOK', False))
     cloudmail_enabled = bool(getattr(core_engine.cfg, 'CM_LOCAL_WEBHOOK', False))

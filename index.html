@@ -678,6 +678,7 @@
                                     <option value="local_microsoft">本地微软邮箱库</option>
                                     <option value="gmail_fission">Gmail OAuth裂变</option>
                                     <option value="Gmail_OAuth">Gmail_OAuth授权(cf转发gmail直接选此模式收件)</option>
+                                    <option value="openai_cpa">OpenAI-CPA 内存池</option>
                                     <option value="freemail">freemail</option>
                                     <option value="cloudmail">cloudmail</option>
                                     <option value="mail_curl">mail_curl</option>
@@ -745,12 +746,12 @@
                                             <h4 class="text-sm font-black text-blue-800 tracking-wide">多级域名泛解析模式</h4>
                                             <p class="text-xs text-slate-500 mt-1 font-medium">开启后将自动使用指定域名层级。</p>
                                             <p class="text-[11px] text-slate-400 mt-1">第一次使用请填写好上方发信域名池后点击下方推送按钮，如果加入新主域也要点推送，推送只需要一次永久生效</p>
-                                            <p v-if="!['freemail', 'imap', 'cloudflare_temp_email', 'cloudmail', 'Gmail_OAuth'].includes(config.email_api_mode)" class="text-[11px] font-bold text-rose-600 mt-3 bg-rose-50 px-3 py-2 rounded-lg inline-block border border-rose-100 shadow-sm flex items-center gap-1.5">
+                                            <p v-if="!['freemail', 'imap', 'cloudflare_temp_email', 'cloudmail', 'Gmail_OAuth', 'openai_cpa'].includes(config.email_api_mode)" class="text-[11px] font-bold text-rose-600 mt-3 bg-rose-50 px-3 py-2 rounded-lg inline-block border border-rose-100 shadow-sm flex items-center gap-1.5">
                                                 <span>⚠️</span> 当前模式不支持此功能！仅限 cloudflare_temp_email, freemail, imap, cloudmail。
                                             </p>
                                         </div>
-                                        <label class="relative inline-flex items-center shrink-0 mt-3 sm:mt-0" :class="['freemail', 'imap', 'cloudflare_temp_email', 'cloudmail', 'Gmail_OAuth'].includes(config.email_api_mode) ? 'cursor-pointer' : 'cursor-not-allowed opacity-50 grayscale'">
-                                            <input type="checkbox" v-model="config.enable_sub_domains" :disabled="!['freemail', 'imap', 'cloudflare_temp_email', 'cloudmail', 'Gmail_OAuth'].includes(config.email_api_mode)" class="sr-only peer">
+                                        <label class="relative inline-flex items-center shrink-0 mt-3 sm:mt-0" :class="['freemail', 'imap', 'cloudflare_temp_email', 'cloudmail', 'Gmail_OAuth', 'openai_cpa'].includes(config.email_api_mode) ? 'cursor-pointer' : 'cursor-not-allowed opacity-50 grayscale'">
+                                            <input type="checkbox" v-model="config.enable_sub_domains" :disabled="!['freemail', 'imap', 'cloudflare_temp_email', 'cloudmail', 'Gmail_OAuth', 'openai_cpa'].includes(config.email_api_mode)" class="sr-only peer">
                                             <div class="relative w-11 h-6 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all after:shadow-sm peer-checked:bg-blue-600 shadow-inner transition-colors duration-300"></div>
                                         </label>
                                     </div>
@@ -1051,8 +1052,41 @@
                                         </div>
                                     </div>
                                 </div>
+                                <div v-if="config.email_api_mode === 'openai_cpa' && config.openai_cpa" class="animate-fade-in space-y-4 mt-2">
+                                    <div class="flex items-center gap-2 mb-4">
+                                        <span class="text-xs font-black text-amber-800 bg-amber-100 px-3 py-1.5 rounded-md border border-amber-200 shadow-sm uppercase tracking-wider">当前模式</span>
+                                        <span class="text-sm font-black text-slate-700">OpenAI-CPA 专属极简内存池邮箱</span>
+                                    </div>
 
+                                    <div>
+                                        <label class="block text-slate-700 text-xs font-extrabold mb-1.5 uppercase tracking-wider">通信密钥 (EMAIL_WEBHOOK_SECRET)</label>
+                                        <div class="relative">
+                                            <input
+                                                :type="showPwd.openai_cpa ? 'text' : 'password'"
+                                                v-model="config.openai_cpa.webhook_secret"
+                                                class="w-full appearance-none bg-white border border-slate-200 text-slate-700 rounded-lg py-2.5 px-3 pr-10 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-colors shadow-sm font-mono text-sm placeholder:text-slate-300"
+                                                placeholder="请输入与 Worker 一致的高强度密钥..."
+                                            >
+                                            <button @click="showPwd.openai_cpa = !showPwd.openai_cpa" class="absolute right-3 top-1/2 -translate-y-1/2 text-lg text-slate-400 hover:text-indigo-600 focus:outline-none transition-transform hover:scale-110">
+                                                {{ showPwd.openai_cpa ? '👁️' : '🙈' }}
+                                            </button>
+                                        </div>
+                                    </div>
 
+                                    <div class="text-xs text-indigo-800 font-bold bg-indigo-50 border border-indigo-200 p-4 rounded-xl leading-relaxed shadow-sm mt-4">
+                                        <p class="flex items-center gap-1.5 text-sm"><span>⚡</span> 解决每日CF 10w限制问题，邮件内存储存60秒，阅后既焚，项目重启后会自动清空。</p>
+                                        <p class="mt-2 text-indigo-700 opacity-90">系统将自动开启本地服务接收，抛弃R2,D1,KV</p>
+                                        <p class="mt-3 text-rose-600 font-black bg-rose-50/50 p-2 rounded-lg border border-rose-100">
+                                            🔥 注意：请务必确保上方填写的密钥与 CF Worker 变量中的 <code>EMAIL_WEBHOOK_SECRET</code> 严格一致！
+                                        </p>
+                                        <div class="mt-3 pt-3 border-t border-indigo-200/50 flex flex-col sm:flex-row sm:items-center gap-1">
+                                            <span>🔗 openai-cpa专属邮箱项目地址：</span>
+                                            <a href="https://github.com/wenfxl/openai-cpa-email" target="_blank" class="text-blue-600 hover:text-blue-700 hover:underline font-bold transition-colors">
+                                                点击前往获取
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
                                 <div v-if="config.email_api_mode === 'fvia' && config.fvia" class="animate-fade-in space-y-4">
                                     <div class="flex items-center gap-2 mb-4">
                                         <span class="text-xs font-black text-amber-800 bg-amber-100 px-3 py-1.5 rounded-md border border-amber-200 shadow-sm uppercase tracking-wider">当前模式</span>

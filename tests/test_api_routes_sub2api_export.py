@@ -6,6 +6,7 @@ import unittest
 import builtins
 from contextlib import ExitStack
 from unittest.mock import patch
+from fastapi import APIRouter
 
 EXPECTED_MODEL_MAPPING = {
     "gpt-5.1": "gpt-5.1",
@@ -39,6 +40,16 @@ class ApiRoutesSub2ApiExportTests(unittest.TestCase):
             patch.dict(
                 sys.modules,
                 {
+                    "routers.system_routes": types.SimpleNamespace(router=APIRouter()),
+                    "routers.account_routes": types.SimpleNamespace(router=APIRouter()),
+                    "routers.service_routes": types.SimpleNamespace(router=APIRouter()),
+                    "routers.sms_routes": types.SimpleNamespace(router=APIRouter()),
+                    "utils.auth_core": types.SimpleNamespace(
+                        router=APIRouter(),
+                        code_pool={},
+                        cache_lock=object(),
+                        generate_payload=lambda *args, **kwargs: "",
+                    ),
                     "utils.proxy_manager": types.SimpleNamespace(
                         smart_switch_node=lambda *args, **kwargs: True,
                         reload_proxy_config=lambda *args, **kwargs: None,
@@ -48,6 +59,27 @@ class ApiRoutesSub2ApiExportTests(unittest.TestCase):
                     "utils.integrations.sub2api_client": types.SimpleNamespace(
                         Sub2APIClient=object,
                         build_default_model_mapping=lambda: EXPECTED_MODEL_MAPPING.copy(),
+                        build_sub2api_export_bundle=lambda token_items, settings=None, rotate_missing_proxy=False: {
+                            "exported_at": "2026-04-25T00:00:00Z",
+                            "proxies": [],
+                            "accounts": [
+                                {
+                                    "name": str(token_items[0].get("email", "unknown"))[:64],
+                                    "platform": "openai",
+                                    "type": "oauth",
+                                    "credentials": {
+                                        "refresh_token": token_items[0].get("refresh_token", ""),
+                                        "model_mapping": EXPECTED_MODEL_MAPPING.copy(),
+                                    },
+                                    "concurrency": 10,
+                                    "priority": 1,
+                                    "rate_multiplier": 1.0,
+                                    "extra": {"load_factor": 10},
+                                    "proxy_name": token_items[0].get("sub2api_proxy_name", ""),
+                                }
+                            ],
+                        },
+                        get_sub2api_push_settings=lambda: {"concurrency": 10, "load_factor": 10, "priority": 1, "rate_multiplier": 1.0},
                     ),
                     "utils.integrations.tg_notifier": types.SimpleNamespace(
                         send_tg_msg_sync=lambda *args, **kwargs: None,

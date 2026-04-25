@@ -78,6 +78,7 @@ class SystemRoutesEmailWebhookTests(unittest.TestCase):
                 ),
                 "utils.db_manager": types.SimpleNamespace(),
                 "utils.integrations.tg_notifier": types.SimpleNamespace(send_tg_msg_async=lambda *args, **kwargs: None),
+                "utils.auth_core": types.SimpleNamespace(code_pool=_FakeTTLCache()),
                 "global_state": types.SimpleNamespace(
                     VALID_TOKENS=set(),
                     CLUSTER_NODES={},

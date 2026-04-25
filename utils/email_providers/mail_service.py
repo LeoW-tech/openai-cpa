@@ -534,6 +534,14 @@ def get_email_and_token(proxies: Any = None) -> tuple:
     if ai_switch_on:
         print(f"[{cfg.ts()}] [AI-状态] 已开启 （{mask_email(email_str)}） AI 智能邮箱域名信息增强...")
 
+    if mode == "openai_cpa":
+        if getattr(cfg, 'OPENAI_CPA_WEBHOOK_SECRET', ""):
+            print(f"[{cfg.ts()}] [INFO] 成功通过 项目专属邮箱 OPENAI-CPA 指定创建邮箱: {mask_email(email_str)}")
+            return email_str, ""
+        else:
+            print(f"[{cfg.ts()}] [ERROR] 项目专属邮箱 OPENAI-CPA 未填写通讯密钥，无法生成邮箱！")
+            return None, None
+
     if mode == "cloudmail":
         if getattr(cfg, 'CM_LOCAL_WEBHOOK', False):
             print(f"[{cfg.ts()}] [INFO] 成功通过 本项目收件模式 cloudmail 指定创建邮箱: {mask_email(email_str)}")
@@ -1049,7 +1057,7 @@ def get_oai_code(
                                 except Exception:
                                     pass
                             if code:
-                                print(f"[{cfg.ts()}] [SUCCESS] cloudmail (本项目极速) ({target_email}) 提取成功: {code}")
+                                print(f"[{cfg.ts()}] [SUCCESS] cloudmail (本项目极速) ({mask_email(target_email)}) 提取成功: {code}")
                                 return code
 
                     except ImportError:
@@ -1441,7 +1449,21 @@ def get_oai_code(
                             print(f"\n[{cfg.ts()}] [DEBUG] 访问垃圾箱失败: {e}")
                 if not found:
                     pass
-
+            elif mode == "openai_cpa":
+                if getattr(cfg, 'OPENAI_CPA_WEBHOOK_SECRET', ""):
+                    try:
+                        from utils.auth_core import code_pool
+                        target_email = email.lower().strip()
+                        if target_email in code_pool:
+                            raw_text = code_pool.get(target_email, "")
+                            code = _extract_otp_code(raw_text)
+                            if code:
+                                code_pool.pop(target_email, None)
+                                print(
+                                    f"[{cfg.ts()}] [SUCCESS] 项目专属邮箱 OPENAI-CPA ({mask_email(target_email)}) 提取成功: {code}")
+                                return code
+                    except ImportError:
+                        print(f"[{cfg.ts()}] [ERROR] 无法导入内存池！")
             elif mode == "freemail":
                 if getattr(cfg, 'FREEMAIL_LOCAL_WEBHOOK', False):
                     try:
@@ -1460,7 +1482,7 @@ def get_oai_code(
                                 except Exception:
                                     pass
                             if code:
-                                print(f"[{cfg.ts()}] [SUCCESS] freemail (本项目极速) ({target_email}) 提取成功: {code}")
+                                print(f"[{cfg.ts()}] [SUCCESS] freemail (本项目极速) ({mask_email(target_email)}) 提取成功: {code}")
                                 return code
 
                     except ImportError:

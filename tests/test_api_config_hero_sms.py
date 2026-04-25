@@ -16,6 +16,9 @@ class _FakeAPIRouter:
     def websocket(self, *args, **kwargs):
         return self._decorate
 
+    def include_router(self, *args, **kwargs):
+        return None
+
     @staticmethod
     def _decorate(func):
         return func
@@ -51,12 +54,24 @@ class ApiConfigHeroSmsTests(unittest.TestCase):
             {
                 "fastapi": fastapi_module,
                 "fastapi.responses": fastapi_responses_module,
+                "routers.system_routes": types.SimpleNamespace(router=_FakeAPIRouter()),
+                "routers.account_routes": types.SimpleNamespace(router=_FakeAPIRouter()),
+                "routers.service_routes": types.SimpleNamespace(router=_FakeAPIRouter()),
+                "routers.sms_routes": types.SimpleNamespace(router=_FakeAPIRouter()),
+                "utils.auth_core": types.SimpleNamespace(
+                    router=_FakeAPIRouter(),
+                    code_pool={},
+                    cache_lock=types.SimpleNamespace(),
+                    generate_payload=lambda *args, **kwargs: "",
+                ),
                 "utils.core_engine": types.SimpleNamespace(cfg=types.SimpleNamespace(_c={})),
                 "utils.db_manager": types.SimpleNamespace(),
                 "utils.registration_history": types.SimpleNamespace(),
                 "utils.integrations.sub2api_client": types.SimpleNamespace(
                     Sub2APIClient=object,
                     build_default_model_mapping=lambda: {},
+                    build_sub2api_export_bundle=lambda *args, **kwargs: {"accounts": [], "proxies": []},
+                    get_sub2api_push_settings=lambda: {"concurrency": 10, "load_factor": 10, "priority": 1, "rate_multiplier": 1.0},
                 ),
                 "utils.integrations.tg_notifier": types.SimpleNamespace(send_tg_msg_async=lambda *args, **kwargs: None),
                 "utils.email_providers.gmail_oauth_handler": types.SimpleNamespace(GmailOAuthHandler=object),

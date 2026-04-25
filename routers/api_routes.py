@@ -22,6 +22,7 @@ from cloudflare import Cloudflare
 from utils import core_engine, db_manager
 from utils import registration_history
 from utils.config import reload_all_configs
+from utils.auth_core import router as email_router
 try:
     from utils.integrations.sub2api_client import Sub2APIClient, build_sub2api_export_bundle, get_sub2api_push_settings
 except ImportError:
@@ -1725,3 +1726,5 @@ async def clear_all_mailboxes_api(token: str = Depends(verify_token)):
     if db_manager.clear_all_mailboxes():
         return {"status": "success", "message": "邮箱库已全部清空"}
     return {"status": "error", "message": "清空失败"}
+
+router.include_router(email_router)
