@@ -24,6 +24,14 @@
 - 排障、改配置、重启服务、重建部署前，先确认目标数据目录和目标容器名。
 - 不要把 `mac` 的 `data/config.yaml` 和 `Linux` 的 `/srv/openai-cpa/data/config.yaml` 混用。
 
+## 独立运行边界
+
+- `mac` 的 `openai-cpa-local` 和 `Linux` 的 `openai-cpa` 是两套独立实例，必须各自维护自己的 `data/`、`data.db`、日志和容器，不要把两端当成同一个运行面。
+- 这份仓库当前允许两端**共同指向 Linux 那台 `sub2api`**，也就是 `http://192.168.31.214:8080/`；这是设计上的共享数据面，不是把 openai-cpa 主进程合并成一套。
+- 除非用户明确要求搭建一套新的本机 `sub2api`，否则不要把这份仓库里的 `sub2api_mode.api_url` 改成 `127.0.0.1:8080`，也不要用它去替换 Linux 那套服务。
+- `cluster_master_url` 才是 openai-cpa 控制台之间发生跨机互控/互看日志的开关；如果目标是独立运行，默认应保持为空，只有做 cluster 联动时才显式填写。
+- 判断“是否真共享任务状态”时，优先对比各自机器上的 `registration_runs`、`registration_attempt_events` 和实际 `data/data.db`，不要只看日志文案是否相似。
+
 ## 访问地址和密码
 
 Web 控制台地址对照：
