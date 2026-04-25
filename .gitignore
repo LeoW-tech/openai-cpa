@@ -39,3 +39,6 @@ aitest.py
 VPN节点yaml文件/shadowsocks_1897844.yaml
 VPN节点yaml文件/vv148.no-mad-world.club.yaml
 VPN节点yaml文件/iKuuu_V2.yaml
+
+# 上游遗留本地备份文件
+register.py.bak

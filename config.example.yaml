@@ -292,9 +292,38 @@ hero_sms:
   reuse_phone: true
   reuse_max_uses: 2
   max_price: 0.08
+  min_price: 0.05
   min_balance: 1
   max_tries: 3
   poll_timeout_sec: 120
+
+smsbower:
+  enabled: false
+  api_key:
+  base_url: https://smsbower.page/stubs/handler_api.php
+  country: 0
+  service: dr
+  auto_pick_country: false
+  verify_on_register: false
+  reuse_phone: true
+  max_price: 0.08
+  min_balance: 1
+  max_tries: 3
+  poll_timeout_sec: 120
+
+fivesim:
+  enabled: false
+  api_key: ""
+  service: "openai"
+  country: "any"
+  auto_pick_country: true
+  verify_on_register: false
+  reuse_phone: true
+  max_price: 50.0
+  min_price: 0.0
+  min_balance: 10.0
+  max_tries: 3
+  poll_timeout_sec: 180
 
 # 常规量产模式专属配置
 normal_mode:

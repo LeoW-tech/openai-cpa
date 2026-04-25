@@ -48,7 +48,6 @@ class ProxyIMAP4_SSL(imaplib.IMAP4_SSL):
 luckmail_lock = threading.Lock()
 empty_retry_count = 0
 empty_lock = threading.Lock()
-
 _CM_TOKEN_CACHE: Optional[str] = None
 
 _thread_data = threading.local()
@@ -447,6 +446,7 @@ def get_email_and_token(proxies: Any = None) -> tuple:
         ms_service = LocalMicrosoftService(proxies=mail_proxies)
 
         mailbox_info = ms_service.get_unused_mailbox()
+
         if not mailbox_info:
             global empty_retry_count
             with empty_lock:
@@ -466,7 +466,6 @@ def get_email_and_token(proxies: Any = None) -> tuple:
 
         with empty_lock:
             empty_retry_count = 0
-
         email = mailbox_info["email"]
         set_last_email(email)
         print(f"[{cfg.ts()}] [INFO] 微软库分配并锁定账号: ({mask_email(email)})")
