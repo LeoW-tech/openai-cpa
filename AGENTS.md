@@ -23,7 +23,7 @@
 - `mac` 侧以本地项目目录和 `openai-cpa-local` 相关命令为主。
 - `Linux` 侧以 `/srv/openai-cpa/docker-compose.linux.yml` 和容器 `openai-cpa` 为主。
 - 排障、改配置、重启服务、重建部署前，先确认目标数据目录和目标容器名。
-- 不要把 `mac` 的 `data/config.yaml` 和 `Linux` 的 `/srv/openai-cpa/data/config.yaml` 混用。
+- 不要把 `mac` 的 `data/config.yaml`、`data/data.db` 和 `Linux` 的 `/srv/openai-cpa/data/config.yaml`、`/srv/openai-cpa/data/data.db` 混用。
 
 ## 独立运行边界
 
@@ -39,6 +39,7 @@ Web 控制台地址对照：
 | 环境 | 地址 |
 | --- | --- |
 | mac 本机访问 | `http://127.0.0.1:18000` |
+| mac 局域网访问 | `http://<本机局域网IP>:18000` |
 | Linux 本机访问 | `http://127.0.0.1:8000` |
 | Linux 局域网访问 | `http://192.168.31.214:8000` |
 

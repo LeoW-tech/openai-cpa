@@ -235,6 +235,8 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - HOST_PROJECT_PATH=${PWD}
+      - OPENAI_CPA_PUBLIC_HOST=127.0.0.1
+      - OPENAI_CPA_PUBLIC_PORT=18000
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
@@ -264,6 +266,8 @@ services:
     restart: always
     environment:
       - TZ=Asia/Shanghai
+      - OPENAI_CPA_PUBLIC_HOST=127.0.0.1
+      - OPENAI_CPA_PUBLIC_PORT=18000
       - DB_TYPE=mysql
       - DB_HOST=MySQL IP
       - DB_PORT=3306

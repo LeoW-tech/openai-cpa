@@ -10,6 +10,8 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 CONTAINER_NAME="openai-cpa-local"
 IMAGE_NAME="openai-cpa-local:latest"
 MOUNT_DOCKER_SOCK="${OPENAI_CPA_MOUNT_DOCKER_SOCK:-1}"
+LOCAL_WEB_PORT="${OPENAI_CPA_LOCAL_PORT:-18000}"
+PUBLIC_HOST="${OPENAI_CPA_PUBLIC_HOST:-127.0.0.1}"
 
 find_docker_bin() {
   local candidate=""
@@ -72,7 +74,10 @@ fi
 docker_run_args=(
   run -d
   --name "${CONTAINER_NAME}"
-  -p 8000:8000
+  -p "${LOCAL_WEB_PORT}:8000"
+  -e "OPENAI_CPA_PUBLIC_HOST=${PUBLIC_HOST}"
+  -e "OPENAI_CPA_PUBLIC_PORT=${LOCAL_WEB_PORT}"
+  -e "HOST_PROJECT_PATH=${PROJECT_ROOT}"
   -v "${DATA_DIR}:/app/data"
   --add-host=host.docker.internal:host-gateway
 )

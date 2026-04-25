@@ -6,12 +6,14 @@ services:
     image: openai-cpa-local:latest
     container_name: openai-cpa-local
     ports:
-      - "8000:8000"
+      - "18000:8000"
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
       - HOST_PROJECT_PATH=${PWD}
+      - OPENAI_CPA_PUBLIC_HOST=127.0.0.1
+      - OPENAI_CPA_PUBLIC_PORT=18000
     volumes:
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock

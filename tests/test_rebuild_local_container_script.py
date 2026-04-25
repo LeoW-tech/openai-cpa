@@ -81,7 +81,10 @@ class RebuildLocalContainerScriptTests(unittest.TestCase):
         self.assertIn("stop -t 15 openai-cpa-local", logged_commands)
         self.assertIn("rm -f openai-cpa-local", logged_commands)
         self.assertIn("build -t openai-cpa-local:latest .", logged_commands)
-        self.assertIn("--name openai-cpa-local -p 8000:8000", logged_commands)
+        self.assertIn("--name openai-cpa-local -p 18000:8000", logged_commands)
+        self.assertIn("OPENAI_CPA_PUBLIC_HOST=127.0.0.1", logged_commands)
+        self.assertIn("OPENAI_CPA_PUBLIC_PORT=18000", logged_commands)
+        self.assertIn(f"HOST_PROJECT_PATH={project_root}", logged_commands)
 
 
 if __name__ == "__main__":

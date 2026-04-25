@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from utils import core_engine, db_manager
 from utils.config import reload_all_configs
 from utils.log_stream_cache import RecentParsedLogCache
+from utils.runtime_display import get_local_storage_paths, get_public_console_url
 
 from global_state import engine, log_history, append_log
 from routers import api_routes
@@ -188,6 +189,8 @@ threading.Thread(target=_worker_push_thread, daemon=True).start()
 if __name__ == "__main__":
     try: reload_all_configs()
     except: pass
+    console_url = get_public_console_url()
+    data_dir, db_path = get_local_storage_paths(os.path.dirname(os.path.abspath(__file__)))
     print("=" * 65)
     print(f"[{core_engine.ts()}] [系统] OpenAI 全链路自动化生产与多维资源中转调度平台")
     print(f"[{core_engine.ts()}] [系统] Author: (wenfxl)轩灵")
@@ -197,7 +200,9 @@ if __name__ == "__main__":
     print(f"[{core_engine.ts()}] [系统] 根据官网披露消息：在某些国家，您可以使用 WhatsApp 完成手机验证，而无需通过短信：阿拉伯联合酋长国、埃及、印度尼西亚、以色列、印度、马来西亚、尼日利亚、巴基斯坦、沙特阿拉伯、土耳其、乌克兰、越南，目前WhatsApp需要大家测试后在说。")
     print("-" * 65)
     print(f"[{core_engine.ts()}] [系统] Web 控制台已准备就绪，等待下发指令...")
-    sys.__stdout__.write(f"[{core_engine.ts()}] [系统] 控制台地址：http://127.0.0.1:8000 \n")
+    sys.__stdout__.write(f"[{core_engine.ts()}] [系统] 控制台地址：{console_url} \n")
+    sys.__stdout__.write(f"[{core_engine.ts()}] [系统] 本地数据目录：{data_dir} \n")
+    sys.__stdout__.write(f"[{core_engine.ts()}] [系统] 本地SQLite：{db_path} \n")
     sys.__stdout__.write(f"[{core_engine.ts()}] [系统] 控制台初始密码：admin \n")
     sys.__stdout__.write(f"[{core_engine.ts()}] [系统] 结束请猛猛重复按CTRL+C \n")
     sys.__stdout__.flush()

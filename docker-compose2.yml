@@ -5,10 +5,12 @@ services:
     image: wenfxl/wenfxl-codex-manager:latest
     container_name: wenfxl_codex_manager
     ports:
-      - "8000:8000"
+      - "18000:8000"
     restart: always
     environment:
       - TZ=Asia/Shanghai
+      - OPENAI_CPA_PUBLIC_HOST=127.0.0.1
+      - OPENAI_CPA_PUBLIC_PORT=18000
       - DB_TYPE=mysql
       - DB_HOST=你的云端MySQL地址
       - DB_PORT=3306
