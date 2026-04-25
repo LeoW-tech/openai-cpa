@@ -70,6 +70,8 @@ class SystemRoutesEmailWebhookTests(unittest.TestCase):
                     cfg=types.SimpleNamespace(
                         FREEMAIL_LOCAL_WEBHOOK=True,
                         FREEMAIL_WEBHOOK_SECRET="secret-123",
+                        CM_LOCAL_WEBHOOK=False,
+                        CM_WEBHOOK_SECRET="cloud-secret",
                     ),
                     ts=lambda: "2026-04-25 12:00:00",
                     run_stats={},
@@ -104,6 +106,8 @@ class SystemRoutesEmailWebhookTests(unittest.TestCase):
             cfg=types.SimpleNamespace(
                 FREEMAIL_LOCAL_WEBHOOK=True,
                 FREEMAIL_WEBHOOK_SECRET="secret-123",
+                CM_LOCAL_WEBHOOK=False,
+                CM_WEBHOOK_SECRET="cloud-secret",
                 NORMAL_TARGET_COUNT=0,
             ),
             ts=lambda: "2026-04-25 12:00:00",
@@ -187,6 +191,22 @@ class SystemRoutesEmailWebhookTests(unittest.TestCase):
         self.assertEqual({"status": "success"}, result)
         self.assertIn("user@example.com", system_routes.code_pool)
         self.assertEqual("Your ChatGPT code is 654321", system_routes.code_pool["user@example.com"])
+
+    def test_receive_email_webhook_accepts_cloudmail_secret_when_cloudmail_mode_enabled(self):
+        system_routes = self._reload_system_routes()
+        system_routes.core_engine.cfg.FREEMAIL_LOCAL_WEBHOOK = False
+        system_routes.core_engine.cfg.CM_LOCAL_WEBHOOK = True
+        req = system_routes.EmailWebhookReq(
+            message_id="msg-cloudmail",
+            to_addr="cloud@example.com",
+            raw_content=self._build_raw_email("Your ChatGPT code is 998877"),
+            from_addr="noreply@cloud-mail.test",
+        )
+
+        result = asyncio.run(system_routes.receive_email_webhook(req, x_webhook_secret="cloud-secret"))
+
+        self.assertEqual({"status": "success"}, result)
+        self.assertEqual("Your ChatGPT code is 998877", system_routes.code_pool["cloud@example.com"])
 
 
 if __name__ == "__main__":
