@@ -14,6 +14,7 @@
 | 仓库目录 | `/Users/meilinwang/Projects/openai-cpa-Public` | `/srv/openai-cpa/repo` |
 | 数据目录 | `/Users/meilinwang/Projects/openai-cpa-Public/data` | `/srv/openai-cpa/data` |
 | 配置文件 | `/Users/meilinwang/Projects/openai-cpa-Public/data/config.yaml` | `/srv/openai-cpa/data/config.yaml` |
+| 默认访问地址 | `http://127.0.0.1:18000` | `http://127.0.0.1:8000` |
 | 容器名 | `openai-cpa-local` | `openai-cpa` |
 | 主要运行入口 | 本地项目目录 + 本地容器脚本 | `/srv/openai-cpa/docker-compose.linux.yml` |
 
@@ -26,11 +27,10 @@
 
 ## 独立运行边界
 
-- `mac` 的 `openai-cpa-local` 和 `Linux` 的 `openai-cpa` 是两套独立实例，必须各自维护自己的 `data/`、`data.db`、日志和容器，不要把两端当成同一个运行面。
-- 这份仓库当前允许两端**共同指向 Linux 那台 `sub2api`**，也就是 `http://192.168.31.214:8080/`；这是设计上的共享数据面，不是把 openai-cpa 主进程合并成一套。
-- 除非用户明确要求搭建一套新的本机 `sub2api`，否则不要把这份仓库里的 `sub2api_mode.api_url` 改成 `127.0.0.1:8080`，也不要用它去替换 Linux 那套服务。
+- `mac` 的 `openai-cpa-local` 和 `Linux` 的 `openai-cpa` 是两套独立实例；`mac` 本地默认访问入口是 `http://127.0.0.1:18000`，本地 `data/`、`data/data.db`、日志和容器都必须独立维护，不要把两端当成同一个运行面。
+- `sub2api_mode` / `cpa_mode` 指向哪里由用户自行决定；除非用户明确要求，否则不要擅自修改 `sub2api_mode.api_url`、`cpa_mode.api_url` 等目标地址。
 - `cluster_master_url` 才是 openai-cpa 控制台之间发生跨机互控/互看日志的开关；如果目标是独立运行，默认应保持为空，只有做 cluster 联动时才显式填写。
-- 判断“是否真共享任务状态”时，优先对比各自机器上的 `registration_runs`、`registration_attempt_events` 和实际 `data/data.db`，不要只看日志文案是否相似。
+- 判断“是否真共享任务状态”时，优先对比各自机器上的 `registration_runs`、`registration_attempt_events`、`/Users/meilinwang/Projects/openai-cpa-Public/data/data.db` 和 `/srv/openai-cpa/data/data.db`，不要只看日志文案是否相似。
 
 ## 访问地址和密码
 
@@ -38,7 +38,7 @@ Web 控制台地址对照：
 
 | 环境 | 地址 |
 | --- | --- |
-| mac 本机访问 | `http://127.0.0.1:8000` |
+| mac 本机访问 | `http://127.0.0.1:18000` |
 | Linux 本机访问 | `http://127.0.0.1:8000` |
 | Linux 局域网访问 | `http://192.168.31.214:8000` |
 
@@ -86,6 +86,7 @@ admin
 - 主配置文件：`/Users/meilinwang/Projects/openai-cpa-Public/data/config.yaml`
 - 本地 SQLite：`/Users/meilinwang/Projects/openai-cpa-Public/data/data.db`
 - 源码方式日志：`/Users/meilinwang/Projects/openai-cpa-Public/data/logs/app.log`
+- 以上路径和 `data/data.db` 只对应 mac 本地实例，不与 Linux 正式环境共用。
 
 ### Linux 正式环境
 
@@ -103,6 +104,7 @@ admin
 - 容器名：`openai-cpa-local`
 - 推荐重启入口：`./scripts/restart_local_container.sh`
 - 推荐重建入口：`./scripts/rebuild_local_container.sh`
+- 本地脚本拉起后的默认浏览器入口按 `http://127.0.0.1:18000` 理解。
 
 ### Linux 正式环境
 
@@ -125,6 +127,7 @@ admin
 
 - 当前是双端并列运行，不设单一默认主端
 - `mac` 环境优先按本地项目目录和 `openai-cpa-local` 相关脚本维护
+- `mac` 本地浏览器默认入口统一使用 `http://127.0.0.1:18000`
 - `Linux` 环境优先按 `/srv/openai-cpa` 和 `docker-compose.linux.yml` 维护
 - 配置文件统一在各自真实数据目录中修改
 - 当前默认开发分支是 `main`
