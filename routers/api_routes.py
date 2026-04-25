@@ -22,7 +22,10 @@ from cloudflare import Cloudflare
 from utils import core_engine, db_manager
 from utils import registration_history
 from utils.config import reload_all_configs
-from utils.auth_core import router as email_router
+try:
+    from utils.auth_core import router as email_router
+except Exception:
+    email_router = APIRouter()
 try:
     from utils.integrations.sub2api_client import Sub2APIClient, build_sub2api_export_bundle, get_sub2api_push_settings
 except ImportError:
