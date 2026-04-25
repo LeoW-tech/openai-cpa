@@ -724,15 +724,38 @@ def _sanitize_local_microsoft_config(local_ms: Any) -> dict:
     return data
 
 
+def _normalize_hero_sms_config(hero_sms: Any, *, include_legacy_alias: bool) -> dict:
+    data = dict(hero_sms) if isinstance(hero_sms, dict) else {}
+    runtime_default = getattr(
+        core_engine.cfg,
+        "HERO_SMS_REUSE_MAX",
+        getattr(core_engine.cfg, "HERO_SMS_REUSE_MAX_USES", 2),
+    )
+    raw_reuse_max = data.get("reuse_max_uses", data.get("reuse_max", runtime_default))
+
+    try:
+        reuse_max = max(1, int(raw_reuse_max or runtime_default))
+    except (TypeError, ValueError):
+        reuse_max = max(1, int(runtime_default or 2))
+
+    data["reuse_max"] = reuse_max
+    if include_legacy_alias:
+        data["reuse_max_uses"] = reuse_max
+    else:
+        data.pop("reuse_max_uses", None)
+    return data
+
+
 @router.get("/api/config")
 async def get_config(token: str = Depends(verify_token)):
-    config_data = getattr(core_engine.cfg, '_c', {}).copy()
+    config_data = copy.deepcopy(getattr(core_engine.cfg, '_c', {}) or {})
 
     if isinstance(config_data.get("sub2api_mode"), dict):
         config_data["sub2api_mode"].pop("min_remaining_weekly_percent", None)
-    hero_sms_cfg = dict(config_data.get("hero_sms") or {}) if isinstance(config_data.get("hero_sms"), dict) else {}
-    hero_sms_cfg.setdefault("reuse_max_uses", getattr(core_engine.cfg, "HERO_SMS_REUSE_MAX_USES", 2))
-    config_data["hero_sms"] = hero_sms_cfg
+    config_data["hero_sms"] = _normalize_hero_sms_config(
+        config_data.get("hero_sms"),
+        include_legacy_alias=True,
+    )
     config_data["web_password"] = getattr(core_engine.cfg, "WEB_PASSWORD", config_data.get("web_password", "admin"))
     config_data["local_microsoft"] = _sanitize_local_microsoft_config(config_data.get("local_microsoft"))
     return config_data
@@ -744,6 +767,11 @@ async def save_config(new_config: dict, token: str = Depends(verify_token)):
         new_config = copy.deepcopy(new_config or {})
         if isinstance(new_config.get("sub2api_mode"), dict):
             new_config["sub2api_mode"].pop("min_remaining_weekly_percent", None)
+        if "hero_sms" in new_config or isinstance(new_config.get("hero_sms"), dict):
+            new_config["hero_sms"] = _normalize_hero_sms_config(
+                new_config.get("hero_sms"),
+                include_legacy_alias=False,
+            )
         new_config["local_microsoft"] = _sanitize_local_microsoft_config(new_config.get("local_microsoft"))
         reload_all_configs(new_config_dict=new_config)
 

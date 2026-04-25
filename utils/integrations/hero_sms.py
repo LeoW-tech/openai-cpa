@@ -166,7 +166,17 @@ def _hero_sms_reuse_ttl_sec() -> int: return 1200
 
 def _hero_sms_reuse_max_uses() -> int:
     try:
-        return max(1, int(getattr(cfg, "HERO_SMS_REUSE_MAX_USES", 2) or 2))
+        return max(
+            1,
+            int(
+                getattr(
+                    cfg,
+                    "HERO_SMS_REUSE_MAX",
+                    getattr(cfg, "HERO_SMS_REUSE_MAX_USES", 2),
+                )
+                or 2
+            ),
+        )
     except Exception:
         return 2
 

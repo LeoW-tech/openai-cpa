@@ -86,21 +86,23 @@ class ApiConfigHeroSmsTests(unittest.TestCase):
 
         return importlib.reload(api_routes)
 
-    def test_get_config_preserves_hero_sms_reuse_max_uses(self):
+    def test_get_config_normalizes_legacy_hero_sms_reuse_max_uses(self):
         api_routes = self._reload_api_routes()
         api_routes.core_engine.cfg._c = {
             "hero_sms": {
                 "enabled": True,
                 "reuse_phone": True,
+                "reuse_max": 2,
                 "reuse_max_uses": 3,
             }
         }
 
         result = asyncio.run(api_routes.get_config(token="demo"))
 
+        self.assertEqual(3, result["hero_sms"]["reuse_max"])
         self.assertEqual(3, result["hero_sms"]["reuse_max_uses"])
 
-    def test_get_config_backfills_default_reuse_max_uses_when_missing(self):
+    def test_get_config_backfills_default_reuse_max_when_missing(self):
         api_routes = self._reload_api_routes()
         api_routes.core_engine.cfg._c = {
             "hero_sms": {
@@ -108,13 +110,15 @@ class ApiConfigHeroSmsTests(unittest.TestCase):
                 "reuse_phone": True,
             }
         }
+        api_routes.core_engine.cfg.HERO_SMS_REUSE_MAX = 4
         api_routes.core_engine.cfg.HERO_SMS_REUSE_MAX_USES = 4
 
         result = asyncio.run(api_routes.get_config(token="demo"))
 
+        self.assertEqual(4, result["hero_sms"]["reuse_max"])
         self.assertEqual(4, result["hero_sms"]["reuse_max_uses"])
 
-    def test_save_config_keeps_hero_sms_reuse_max_uses_before_reload(self):
+    def test_save_config_normalizes_legacy_hero_sms_reuse_max_uses_before_reload(self):
         api_routes = self._reload_api_routes()
         new_config = {
             "hero_sms": {
@@ -129,7 +133,26 @@ class ApiConfigHeroSmsTests(unittest.TestCase):
 
         self.assertEqual("success", result["status"])
         saved_config = reload_configs.call_args.kwargs["new_config_dict"]
-        self.assertEqual(5, saved_config["hero_sms"]["reuse_max_uses"])
+        self.assertEqual(5, saved_config["hero_sms"]["reuse_max"])
+        self.assertNotIn("reuse_max_uses", saved_config["hero_sms"])
+
+    def test_save_config_keeps_canonical_reuse_max_when_present(self):
+        api_routes = self._reload_api_routes()
+        new_config = {
+            "hero_sms": {
+                "enabled": True,
+                "reuse_phone": True,
+                "reuse_max": 6,
+            }
+        }
+
+        with patch.object(api_routes, "reload_all_configs") as reload_configs:
+            result = asyncio.run(api_routes.save_config(new_config=new_config, token="demo"))
+
+        self.assertEqual("success", result["status"])
+        saved_config = reload_configs.call_args.kwargs["new_config_dict"]
+        self.assertEqual(6, saved_config["hero_sms"]["reuse_max"])
+        self.assertNotIn("reuse_max_uses", saved_config["hero_sms"])
 
     def test_save_config_does_not_merge_missing_sections_from_runtime_config(self):
         api_routes = self._reload_api_routes()

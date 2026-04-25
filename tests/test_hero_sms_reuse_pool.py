@@ -27,6 +27,26 @@ class HeroSmsReusePoolTests(unittest.TestCase):
         with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_PHONE", False, create=True):
             self.assertFalse(hero_sms._hero_sms_reuse_enabled())
 
+    def test_reuse_max_uses_prefers_canonical_runtime_attr(self):
+        hero_sms = self._reload_hero_sms(saved_state=None)
+        with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX", 7, create=True):
+            with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX_USES", 3, create=True):
+                self.assertEqual(7, hero_sms._hero_sms_reuse_max_uses())
+
+    def test_reuse_max_uses_falls_back_to_legacy_runtime_attr(self):
+        hero_sms = self._reload_hero_sms(saved_state=None)
+        had_canonical_attr = hasattr(hero_sms.cfg, "HERO_SMS_REUSE_MAX")
+        canonical_value = getattr(hero_sms.cfg, "HERO_SMS_REUSE_MAX", None)
+
+        try:
+            if had_canonical_attr:
+                delattr(hero_sms.cfg, "HERO_SMS_REUSE_MAX")
+            with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX_USES", 6, create=True):
+                self.assertEqual(6, hero_sms._hero_sms_reuse_max_uses())
+        finally:
+            if had_canonical_attr:
+                setattr(hero_sms.cfg, "HERO_SMS_REUSE_MAX", canonical_value)
+
     def test_reuse_snapshot_reflects_runtime_state(self):
         hero_sms = self._reload_hero_sms(saved_state=None)
         hero_sms._hero_sms_reuse_set("reuse-1", "+6699990000", "dr", 52)
@@ -170,30 +190,44 @@ class HeroSmsReusePoolTests(unittest.TestCase):
         with patch.object(hero_sms.cfg, "HERO_SMS_ENABLED", True, create=True):
             with patch.object(hero_sms.cfg, "HERO_SMS_API_KEY", "demo-key", create=True):
                 with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_PHONE", True, create=True):
-                    with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX_USES", 1, create=True):
-                        with patch.object(hero_sms, "hero_sms_get_balance", return_value=(3.5, "")):
-                            with patch.object(hero_sms, "_hero_sms_resolve_service_code", return_value="dr"):
-                                with patch.object(hero_sms, "_hero_sms_resolve_country_id", return_value=52):
-                                    with patch.object(hero_sms, "_hero_sms_pick_country_id", return_value=52):
-                                        with patch.object(hero_sms, "_hero_sms_reuse_get", return_value=("", "", 0)):
-                                            with patch.object(hero_sms, "_hero_sms_max_tries", return_value=1):
-                                                with patch.object(hero_sms, "_hero_sms_get_number", return_value=("act-new-1", "+66912345678", "")):
-                                                    with patch.object(hero_sms, "_hero_sms_mark_ready"):
-                                                        with patch.object(hero_sms, "_hero_sms_poll_code", return_value="112233"):
-                                                            with patch.object(hero_sms, "_post_with_retry", side_effect=[
-                                                                _Resp(200, {"success": True}),
-                                                                _Resp(200, {"continue_url": "https://auth.openai.com/consent"}),
-                                                            ]):
-                                                                ok, _ = hero_sms._try_verify_phone_via_hero_sms(
-                                                                    session,
-                                                                    proxies=None,
-                                                                    run_ctx=run_ctx,
-                                                                )
+                    with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX", 1, create=True):
+                        with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX_USES", 1, create=True):
+                            with patch.object(hero_sms, "hero_sms_get_balance", return_value=(3.5, "")):
+                                with patch.object(hero_sms, "_hero_sms_resolve_service_code", return_value="dr"):
+                                    with patch.object(hero_sms, "_hero_sms_resolve_country_id", return_value=52):
+                                        with patch.object(hero_sms, "_hero_sms_pick_country_id", return_value=52):
+                                            with patch.object(hero_sms, "_hero_sms_reuse_get", return_value=("", "", 0)):
+                                                with patch.object(hero_sms, "_hero_sms_max_tries", return_value=1):
+                                                    with patch.object(hero_sms, "_hero_sms_get_number", return_value=("act-new-1", "+66912345678", "")):
+                                                        with patch.object(hero_sms, "_hero_sms_mark_ready"):
+                                                            with patch.object(hero_sms, "_hero_sms_poll_code", return_value="112233"):
+                                                                with patch.object(hero_sms, "_post_with_retry", side_effect=[
+                                                                    _Resp(200, {"success": True}),
+                                                                    _Resp(200, {"continue_url": "https://auth.openai.com/consent"}),
+                                                                ]):
+                                                                    ok, _ = hero_sms._try_verify_phone_via_hero_sms(
+                                                                        session,
+                                                                        proxies=None,
+                                                                        run_ctx=run_ctx,
+                                                                    )
 
         self.assertTrue(ok)
         snapshot = hero_sms.get_hero_sms_reuse_pool_snapshot()
         self.assertEqual(1, len(snapshot["entries"]))
         self.assertEqual(0, snapshot["entries"][0]["confirmed_uses"])
+
+    def test_reuse_max_helper_prefers_canonical_runtime_field(self):
+        hero_sms = self._reload_hero_sms(saved_state=None)
+
+        with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX", 3, create=True):
+            with patch.object(hero_sms.cfg, "HERO_SMS_REUSE_MAX_USES", 1, create=True):
+                self.assertEqual(3, hero_sms._hero_sms_reuse_max_uses())
+
+    def test_reuse_max_helper_falls_back_to_legacy_runtime_field(self):
+        hero_sms = self._reload_hero_sms(saved_state=None)
+
+        with patch.object(hero_sms, "cfg", types.SimpleNamespace(HERO_SMS_REUSE_MAX_USES=4)):
+            self.assertEqual(4, hero_sms._hero_sms_reuse_max_uses())
 
     def test_verify_phone_persists_phone_fields_even_when_validation_fails(self):
         hero_sms = self._reload_hero_sms(saved_state=None)
