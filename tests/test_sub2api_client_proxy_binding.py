@@ -61,7 +61,35 @@ class Sub2APIClientProxyBindingTests(unittest.TestCase):
         self.assertEqual(EXPECTED_MODEL_MAPPING, account["credentials"]["model_mapping"])
         self.assertIn("load_factor", account["extra"])
 
-    def test_add_account_without_proxy_name_uses_direct_create_endpoint(self):
+    def test_add_account_with_access_token_and_no_proxy_uses_import_endpoint(self):
+        sub2api_client = self._reload_client_module()
+        client = sub2api_client.Sub2APIClient(api_url="http://127.0.0.1:8080", api_key="demo-key")
+        captured = {}
+
+        def fake_post(url, json=None, headers=None, timeout=None, impersonate=None, proxies=None):
+            captured["url"] = url
+            captured["json"] = json
+            return _FakeResponse(status_code=200, payload={"status": "success"})
+
+        with patch.object(sub2api_client.cffi_requests, "post", side_effect=fake_post), \
+             patch.object(sub2api_client.cfg, "get_next_sub2api_proxy_url", return_value=""):
+            ok, msg = client.add_account({
+                "email": "demo@example.com",
+                "access_token": "access-token",
+                "client_id": "client-id",
+                "refresh_token": "refresh-token",
+            })
+
+        self.assertTrue(ok)
+        self.assertEqual("Sub2API account import succeeded", msg)
+        self.assertEqual("http://127.0.0.1:8080/api/v1/admin/accounts/data", captured["url"])
+        account = captured["json"]["data"]["accounts"][0]
+        self.assertEqual("access-token", account["credentials"]["access_token"])
+        self.assertEqual("client-id", account["credentials"]["client_id"])
+        self.assertEqual("refresh-token", account["credentials"]["refresh_token"])
+        self.assertEqual(EXPECTED_MODEL_MAPPING, account["credentials"]["model_mapping"])
+
+    def test_add_account_refresh_only_without_proxy_uses_direct_create_endpoint(self):
         sub2api_client = self._reload_client_module()
         client = sub2api_client.Sub2APIClient(api_url="http://127.0.0.1:8080", api_key="demo-key")
         captured = {}
@@ -82,7 +110,7 @@ class Sub2APIClientProxyBindingTests(unittest.TestCase):
         self.assertEqual("Sub2API account created successfully", msg)
         self.assertEqual("http://127.0.0.1:8080/api/v1/admin/accounts", captured["url"])
         account = captured["json"]
-        self.assertEqual("refresh-token", account["credentials"]["refresh_token"])
+        self.assertEqual({"refresh_token": "refresh-token"}, account["credentials"])
 
 
 if __name__ == "__main__":

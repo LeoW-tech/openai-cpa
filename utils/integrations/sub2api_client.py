@@ -264,6 +264,7 @@ class Sub2APIClient:
     def add_account(self, token_data: Dict[str, Any]) -> Tuple[bool, str]:
         settings = self._get_push_settings()
         working_token_data = dict(token_data)
+        access_token = str(working_token_data.get("access_token", "") or "").strip()
         refresh_token = working_token_data.get("refresh_token", "")
         proxy_obj = working_token_data.get("sub2api_proxy")
         proxy_name = str(working_token_data.get("sub2api_proxy_name", "") or "").strip()
@@ -274,7 +275,7 @@ class Sub2APIClient:
             if proxy_obj:
                 working_token_data["sub2api_proxy"] = proxy_obj
 
-        if not refresh_token or proxy_obj or proxy_name:
+        if access_token or not refresh_token or proxy_obj or proxy_name:
             ok, msg = self._import_account(working_token_data, settings)
             if ok:
                 self._force_bind_groups(account_name, group_ids)
