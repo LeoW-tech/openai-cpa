@@ -21,6 +21,7 @@ from typing import List, Optional, Any
 from cloudflare import Cloudflare
 from utils import core_engine, db_manager
 from utils import registration_history
+from utils import sub2api_reconcile
 from utils.config import reload_all_configs
 try:
     from utils.auth_core import router as email_router
@@ -146,6 +147,10 @@ class SMSPriceReq(BaseModel): service: str = "openai"
 
 
 class GmailExchangeReq(BaseModel): code: str
+class Sub2APIReconcileRepairReq(BaseModel):
+    emails: Optional[list[str]] = None
+    limit: Optional[int] = None
+    max_attempts: int = 2
 
 
 class CloudAccountItem(BaseModel): id: str; type: str
@@ -1155,6 +1160,43 @@ def get_sub2api_groups(token: str = Depends(verify_token)):
         return {"status": "success", "data": response.json().get("data", [])}
     except Exception as exc:
         return {"status": "error", "message": f"Failed to fetch Sub2API groups: {exc}"}
+
+
+@router.get("/api/sub2api/reconcile")
+def get_sub2api_reconcile(limit: int = Query(0), token: str = Depends(verify_token)):
+    sub2api_url = getattr(core_engine.cfg, "SUB2API_URL", "").strip()
+    sub2api_key = getattr(core_engine.cfg, "SUB2API_KEY", "").strip()
+    if not sub2api_url or not sub2api_key:
+        return {"status": "error", "message": "Please save the Sub2API URL and API key first."}
+    try:
+        client = Sub2APIClient(api_url=sub2api_url, api_key=sub2api_key)
+        audit = sub2api_reconcile.list_missing_sub2api_accounts(
+            client,
+            limit=(int(limit) if int(limit or 0) > 0 else None),
+        )
+        return {"status": "success", "data": audit}
+    except Exception as exc:
+        return {"status": "error", "message": f"Sub2API 对账失败: {exc}"}
+
+
+@router.post("/api/sub2api/reconcile/repair")
+def repair_sub2api_reconcile(req: Sub2APIReconcileRepairReq, token: str = Depends(verify_token)):
+    sub2api_url = getattr(core_engine.cfg, "SUB2API_URL", "").strip()
+    sub2api_key = getattr(core_engine.cfg, "SUB2API_KEY", "").strip()
+    if not sub2api_url or not sub2api_key:
+        return {"status": "error", "message": "Please save the Sub2API URL and API key first."}
+    try:
+        client = Sub2APIClient(api_url=sub2api_url, api_key=sub2api_key)
+        result = sub2api_reconcile.repair_missing_sub2api_accounts(
+            client,
+            emails=req.emails,
+            limit=req.limit,
+            max_attempts=req.max_attempts,
+        )
+        level = "success" if int(result.get("failed_total") or 0) == 0 else "warning"
+        return {"status": level, "data": result}
+    except Exception as exc:
+        return {"status": "error", "message": f"Sub2API 补偿失败: {exc}"}
 
 
 @router.get("/api/system/check_update")

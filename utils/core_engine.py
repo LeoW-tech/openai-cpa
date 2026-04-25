@@ -126,6 +126,153 @@ def _log_sub2api_restock_success() -> None:
     print(f"[{ts()}] [SUCCESS] 🚀🚀🎊🥳✨🔥 Sub2API 补货入库成功")
 
 
+def _get_history_attempt_id(run_ctx: Optional[dict] = None, attempt_id: int = 0) -> int:
+    try:
+        resolved_attempt_id = int(attempt_id or 0)
+    except (TypeError, ValueError):
+        resolved_attempt_id = 0
+    if resolved_attempt_id > 0:
+        return resolved_attempt_id
+    if not isinstance(run_ctx, dict):
+        return 0
+    try:
+        return int(run_ctx.get("analytics_attempt_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _record_sub2api_push_event(
+        *,
+        run_ctx: Optional[dict] = None,
+        attempt_id: int = 0,
+        event_type: str,
+        ok_flag: Optional[bool] = None,
+        message: str = "",
+        snapshot: Optional[dict] = None,
+) -> None:
+    resolved_attempt_id = _get_history_attempt_id(run_ctx, attempt_id)
+    if resolved_attempt_id <= 0:
+        return
+    try:
+        registration_history.record_attempt_event(
+            resolved_attempt_id,
+            event_type=event_type,
+            phase="sub2api_push",
+            ok_flag=ok_flag,
+            message=str(message or ""),
+            snapshot=snapshot or {},
+        )
+    except Exception as exc:
+        print(f"[{ts()}] [WARNING] Sub2API push 事件写入失败: {exc}")
+
+
+def _patch_sub2api_push_history(
+        *,
+        ok: bool,
+        message: str = "",
+        run_ctx: Optional[dict] = None,
+        attempt_id: int = 0,
+) -> None:
+    resolved_attempt_id = _get_history_attempt_id(run_ctx, attempt_id)
+    if resolved_attempt_id <= 0:
+        return
+    try:
+        failure_message = "" if ok else str(message or "").strip()
+        registration_history.patch_attempt(
+            resolved_attempt_id,
+            sub2api_push_ok=ok,
+            failure_message=failure_message,
+        )
+    except Exception as exc:
+        print(f"[{ts()}] [WARNING] Sub2API push 结果回写失败: {exc}")
+
+
+def push_token_data_to_sub2api(
+        client: Any,
+        token_data: dict,
+        run_ctx: Optional[dict] = None,
+        proxy_url: str = None,
+        *,
+        attempt_id: int = 0,
+        max_attempts: int = 2,
+        retry_delay_sec: float = 1.0,
+) -> tuple[bool, str, dict]:
+    working_token_data = _build_sub2api_push_token_data(token_data or {}, run_ctx, proxy_url)
+    try:
+        attempts = max(1, int(max_attempts or 1))
+    except (TypeError, ValueError):
+        attempts = 1
+    try:
+        delay_seconds = max(0.0, float(retry_delay_sec or 0))
+    except (TypeError, ValueError):
+        delay_seconds = 0.0
+
+    last_msg = ""
+    for push_attempt in range(1, attempts + 1):
+        _record_sub2api_push_event(
+            run_ctx=run_ctx,
+            attempt_id=attempt_id,
+            event_type="sub2api_push_started",
+            ok_flag=True,
+            message=f"push attempt {push_attempt}/{attempts}",
+            snapshot={
+                "push_attempt": push_attempt,
+                "max_attempts": attempts,
+                "email": str(working_token_data.get("email") or ""),
+            },
+        )
+        ok, msg = client.add_account(working_token_data)
+        last_msg = str(msg or "")
+        if ok:
+            if isinstance(run_ctx, dict):
+                run_ctx["sub2api_push_ok"] = True
+                run_ctx["sub2api_push_error"] = ""
+            _patch_sub2api_push_history(
+                ok=True,
+                message="",
+                run_ctx=run_ctx,
+                attempt_id=attempt_id,
+            )
+            _record_sub2api_push_event(
+                run_ctx=run_ctx,
+                attempt_id=attempt_id,
+                event_type="sub2api_push_succeeded",
+                ok_flag=True,
+                message=last_msg,
+                snapshot={
+                    "push_attempt": push_attempt,
+                    "max_attempts": attempts,
+                    "email": str(working_token_data.get("email") or ""),
+                },
+            )
+            return True, last_msg, working_token_data
+        if push_attempt < attempts and delay_seconds > 0:
+            time.sleep(delay_seconds)
+
+    if isinstance(run_ctx, dict):
+        run_ctx["sub2api_push_ok"] = False
+        run_ctx["sub2api_push_error"] = last_msg
+    _patch_sub2api_push_history(
+        ok=False,
+        message=last_msg,
+        run_ctx=run_ctx,
+        attempt_id=attempt_id,
+    )
+    _record_sub2api_push_event(
+        run_ctx=run_ctx,
+        attempt_id=attempt_id,
+        event_type="sub2api_push_failed",
+        ok_flag=False,
+        message=last_msg,
+        snapshot={
+            "push_attempt": attempts,
+            "max_attempts": attempts,
+            "email": str(working_token_data.get("email") or ""),
+        },
+    )
+    return False, last_msg, working_token_data
+
+
 def _run_history_task(label: str, func: Any, *args: Any, **kwargs: Any) -> None:
     if not callable(func):
         return
@@ -648,7 +795,13 @@ def _handle_dead_account(name: str, is_disabled: bool) -> None:
     else:
         print(f"[{ts()}] [WARNING] 凭证 {mask_email(name)} 已死亡，当前已是禁用状态，根据配置保留不删除。")
 
-def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: dict = None) -> str:
+def handle_registration_result(
+        result: Any,
+        cpa_upload: bool = False,
+        run_ctx: dict = None,
+        *,
+        history_finalize_async: bool = True,
+) -> str:
     if getattr(cfg, 'GLOBAL_STOP', False):
         return "stopped"
     global run_stats
@@ -766,17 +919,25 @@ def handle_registration_result(result: Any, cpa_upload: bool = False, run_ctx: d
     metrics = run_ctx_snapshot.get("analytics_metrics")
     if isinstance(metrics, dict):
         run_ctx_snapshot["analytics_metrics"] = dict(metrics)
-    _run_history_task(
-        "register-finalize",
-        _finalize_registration_history,
-        run_ctx=run_ctx_snapshot,
-        run_id=int(run_stats.get("analytics_run_id") or 0),
-        cpa_upload=cpa_upload,
-        account_email=account_email,
-        last_email=last_email,
-        master_email=master_email,
-        ret_status=ret_status,
-    )
+    finalize_kwargs = {
+        "run_ctx": run_ctx_snapshot,
+        "run_id": int(run_stats.get("analytics_run_id") or 0),
+        "cpa_upload": cpa_upload,
+        "account_email": account_email,
+        "last_email": last_email,
+        "master_email": master_email,
+        "ret_status": ret_status,
+    }
+    if history_finalize_async:
+        _run_history_task(
+            "register-finalize",
+            _finalize_registration_history,
+            **finalize_kwargs,
+        )
+    else:
+        _finalize_registration_history(**finalize_kwargs)
+        if isinstance(run_ctx, dict) and run_ctx_snapshot.get("analytics_attempt_id"):
+            run_ctx["analytics_attempt_id"] = run_ctx_snapshot["analytics_attempt_id"]
     return ret_status
 
 
@@ -820,9 +981,56 @@ def add_result_account_to_sub2api(client: Any, result: Any, run_ctx: dict = None
     if not result or not isinstance(result, (tuple, list)) or not result[0]:
         return False, "missing token result", None
 
-    token_dict = _build_sub2api_push_token_data(json.loads(result[0]), run_ctx, proxy_url)
-    ok, msg = client.add_account(token_dict)
-    return ok, msg, token_dict
+    token_dict = json.loads(result[0])
+    return push_token_data_to_sub2api(
+        client=client,
+        token_data=token_dict,
+        run_ctx=run_ctx,
+        proxy_url=proxy_url,
+    )
+
+
+def process_sub2api_registration_result(
+        *,
+        client: Any,
+        result: Any,
+        run_ctx: dict,
+        proxy_url: str,
+        push_retry_attempts: int = 2,
+        push_retry_delay_sec: float = 1.0,
+) -> str:
+    status = handle_registration_result(
+        result,
+        cpa_upload=False,
+        run_ctx=run_ctx,
+        history_finalize_async=False,
+    )
+    if status != "success":
+        return status
+
+    token_json_str = result[0] if result and isinstance(result, (tuple, list)) and result else ""
+    token_dict = {}
+    try:
+        token_dict = json.loads(token_json_str or "{}")
+    except Exception:
+        token_dict = {}
+    ok, msg, _ = push_token_data_to_sub2api(
+        client=client,
+        token_data=token_dict,
+        run_ctx=run_ctx,
+        proxy_url=proxy_url,
+        max_attempts=push_retry_attempts,
+        retry_delay_sec=push_retry_delay_sec,
+    )
+    if ok:
+        _log_sub2api_restock_success()
+        return "success"
+
+    with _stats_lock:
+        run_stats["success"] = max(0, int(run_stats.get("success", 0) or 0) - 1)
+        run_stats["failed"] = int(run_stats.get("failed", 0) or 0) + 1
+    print(f"[{ts()}] [ERROR] Sub2API 补货入库失败: {msg}")
+    return "sub2api_push_failed"
 
 
 def _borrow_proxy_queue_item() -> tuple[int, Any]:
@@ -1498,14 +1706,18 @@ async def sub2api_main_loop(args, async_stop_event: asyncio.Event, executor=None
                     run_ctx["analytics_metrics"] = {}
                     run_ctx["analytics_attempt_no"] = int(run_stats.get("success", 0) + run_stats.get("failed", 0) + run_stats.get("retries", 0) + 1)
                     result = run(p, run_ctx=run_ctx)
-                    status = handle_registration_result(result, cpa_upload=False, run_ctx=run_ctx)
-
-                    if status == "success":
-                        if hasattr(client, "add_account"):
-                            ok, msg, _ = add_result_account_to_sub2api(client, result, run_ctx=run_ctx, proxy_url=p)
-                            if ok: _log_sub2api_restock_success()
-                            else: print(f"[{ts()}] [ERROR] Sub2API 补货入库失败: {msg}")
-                    return status
+                    if not hasattr(client, "add_account"):
+                        return handle_registration_result(
+                            result,
+                            cpa_upload=False,
+                            run_ctx=run_ctx,
+                        )
+                    return process_sub2api_registration_result(
+                        client=client,
+                        result=result,
+                        run_ctx=run_ctx,
+                        proxy_url=p,
+                    )
 
                 def _sub2api_worker():
                     if async_stop_event.is_set(): return "stopped"

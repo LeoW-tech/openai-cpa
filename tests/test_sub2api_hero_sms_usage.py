@@ -172,6 +172,73 @@ class Sub2ApiHeroSmsUsageTests(unittest.TestCase):
         self.assertEqual("🇯🇵 日本W03 | IEPL", token_dict["sub2api_proxy_name"])
         self.assertEqual("🇯🇵 日本W03 | IEPL", client.payload["sub2api_proxy_name"])
 
+    def test_push_token_data_to_sub2api_marks_failure_and_records_history(self):
+        core_engine = self._reload_core_engine()
+        token_data = {
+            "email": "demo@example.com",
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+        }
+        run_ctx = {"analytics_attempt_id": 88, "sub2api_proxy_name": "🇯🇵 日本W03 | IEPL"}
+
+        class _FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            def add_account(self, payload):
+                self.calls += 1
+                return False, "push failed"
+
+        client = _FakeClient()
+        with patch.object(core_engine.registration_history, "record_attempt_event") as record_event, \
+             patch.object(core_engine.registration_history, "patch_attempt") as patch_attempt, \
+             patch.object(core_engine.time, "sleep"):
+            ok, msg, token_dict = core_engine.push_token_data_to_sub2api(
+                client=client,
+                token_data=token_data,
+                run_ctx=run_ctx,
+                proxy_url="http://127.0.0.1:7890",
+                max_attempts=2,
+                retry_delay_sec=0,
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual("push failed", msg)
+        self.assertEqual(2, client.calls)
+        self.assertEqual("🇯🇵 日本W03 | IEPL", token_dict["sub2api_proxy_name"])
+        self.assertEqual(False, run_ctx["sub2api_push_ok"])
+        self.assertEqual("push failed", run_ctx["sub2api_push_error"])
+        self.assertTrue(record_event.called)
+        self.assertTrue(patch_attempt.called)
+        self.assertEqual(88, record_event.call_args_list[0].args[0])
+        self.assertEqual("sub2api_push_started", record_event.call_args_list[0].kwargs["event_type"])
+        self.assertEqual("sub2api_push_failed", record_event.call_args_list[-1].kwargs["event_type"])
+
+    def test_process_sub2api_registration_result_requires_push_success(self):
+        core_engine = self._reload_core_engine()
+        result = (json.dumps({"email": "demo@example.com", "refresh_token": "rt-demo"}), "Password123!")
+
+        class _FakeClient:
+            def add_account(self, payload):
+                return False, "push failed"
+
+        client = _FakeClient()
+        core_engine.run_stats.update({"success": 1, "failed": 0, "retries": 0, "target": 0})
+        with patch.object(core_engine, "handle_registration_result", return_value="success"), \
+             patch.object(core_engine, "push_token_data_to_sub2api", return_value=(False, "push failed", {"email": "demo@example.com"})), \
+             patch.object(core_engine, "_log_sub2api_restock_success") as log_success:
+            status = core_engine.process_sub2api_registration_result(
+                client=client,
+                result=result,
+                run_ctx={"analytics_attempt_id": 99, "sub2api_proxy_name": "🇯🇵 日本W03 | IEPL"},
+                proxy_url="http://127.0.0.1:7890",
+            )
+
+        self.assertEqual("sub2api_push_failed", status)
+        self.assertEqual(0, core_engine.run_stats["success"])
+        self.assertEqual(1, core_engine.run_stats["failed"])
+        log_success.assert_not_called()
+
     def test_log_sub2api_restock_success_emits_celebratory_log(self):
         core_engine = self._reload_core_engine()
         captured_logs = []
