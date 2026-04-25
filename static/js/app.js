@@ -22,7 +22,7 @@ function normalizeBooleanLike(value, defaultValue = false) {
 createApp({
     data() {
         return {
-            appVersion: 'v12.1.2',
+            appVersion: 'v12.2.0',
             isLoggedIn: !!localStorage.getItem('auth_token'),
             loginPassword: '',
             currentTab: window.location.hash.replace('#', '') || 'console',
@@ -1652,6 +1652,8 @@ createApp({
         },
 
         async fetchCloudAccounts() {
+            if (!this.config || !this.config.sub2api_mode.enable) return;
+            if (!this.config || !this.this.config.cpa_mode.enable) return;
             if (this.cloudFilters.length === 0) {
                 this.cloudAccounts = [];
                 this.cloudTotal = 0;

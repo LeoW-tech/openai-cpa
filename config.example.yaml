@@ -66,8 +66,8 @@ freemail:
   api_url: "https://your-domain.com"
   #JWTTOKEN
   api_token: ""
-  admin_username: 
-  admin_password: 
+  enable_local_webhook: false
+  webhook_secret: ""
 
 # [模式 "cloud-mail" 专属配置]
 cloudmail:

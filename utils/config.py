@@ -203,6 +203,8 @@ LOCAL_MS_SUFFIX_LEN_MIN: int = 8
 LOCAL_MS_SUFFIX_LEN_MAX: int = 8
 FREEMAIL_API_URL: str = ""
 FREEMAIL_API_TOKEN: str = ""
+FREEMAIL_LOCAL_WEBHOOK: bool = False
+FREEMAIL_WEBHOOK_SECRET: str = ""
 CM_API_URL: str = ""
 CM_ADMIN_EMAIL: str = ""
 CM_ADMIN_PASS: str = ""
@@ -386,7 +388,7 @@ def reload_all_configs(new_config_dict=None):
     global EMAIL_API_MODE, MAIL_DOMAINS, GPTMAIL_BASE, ADMIN_AUTH
     global ENABLE_SUB_DOMAINS, SUB_DOMAIN_COUNT
     global IMAP_SERVER, IMAP_PORT, IMAP_USER, IMAP_PASS
-    global FREEMAIL_API_URL, FREEMAIL_API_TOKEN
+    global FREEMAIL_API_URL, FREEMAIL_API_TOKEN, FREEMAIL_LOCAL_WEBHOOK, FREEMAIL_WEBHOOK_SECRET
     global CM_API_URL, CM_ADMIN_EMAIL, CM_ADMIN_PASS
     global MC_API_BASE, MC_KEY
     global DEFAULT_PROXY
@@ -439,6 +441,7 @@ def reload_all_configs(new_config_dict=None):
     global FIVESIM_AUTO_PICK_COUNTRY, FIVESIM_VERIFY_ON_REGISTER, FIVESIM_REUSE_PHONE
     global FIVESIM_MAX_PRICE, FIVESIM_MIN_PRICE, FIVESIM_MIN_BALANCE
     global FIVESIM_MAX_TRIES, FIVESIM_POLL_TIMEOUT_SEC
+
 
     base_yaml_config = init_config()
 
@@ -573,6 +576,8 @@ def reload_all_configs(new_config_dict=None):
     _free = _c.get("freemail", {})
     FREEMAIL_API_URL = str(_free.get("api_url", "")).strip().rstrip("/")
     FREEMAIL_API_TOKEN = _free.get("api_token", "")
+    FREEMAIL_LOCAL_WEBHOOK = bool(_free.get("enable_local_webhook", False))
+    FREEMAIL_WEBHOOK_SECRET = str(_free.get("webhook_secret", ""))
 
     _cm = _c.get("cloudmail", {})
     CM_API_URL = str(_cm.get("api_url", "")).strip().rstrip("/")
