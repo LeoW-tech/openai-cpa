@@ -354,7 +354,7 @@ GMAIL_OAUTH_SUFFIX_MODE: str = "fixed"
 GMAIL_OAUTH_SUFFIX_LEN_MIN: int = 8
 GMAIL_OAUTH_SUFFIX_LEN_MAX: int = 8
 DISABLE_FORCED_TAKEOVER: bool = True
-
+OPENAI_CPA_WEBHOOK_SECRET = ""
 
 def reset_sub2api_proxy_rotation():
     global _sub2api_proxy_rotation_index
@@ -446,7 +446,7 @@ def reload_all_configs(new_config_dict=None):
     global SMSBOWER_REUSE_PHONE, SMSBOWER_REUSE_MAX
     global HERO_SMS_REUSE_PHONE, HERO_SMS_REUSE_MAX
     global FIVESIM_REUSE_PHONE, FIVESIM_REUSE_MAX
-
+    global OPENAI_CPA_WEBHOOK_SECRET
     base_yaml_config = init_config()
 
     _db_conf = base_yaml_config.get("database", {})
@@ -593,6 +593,10 @@ def reload_all_configs(new_config_dict=None):
     _mc = _c.get("mail_curl", {})
     MC_API_BASE = str(_mc.get("api_base", "")).strip().rstrip("/")
     MC_KEY = _mc.get("key", "")
+
+
+    _ocpa = _c.get("openai_cpa", {})
+    OPENAI_CPA_WEBHOOK_SECRET = str(_ocpa.get("webhook_secret", "")).strip()
 
     DEFAULT_PROXY = format_docker_url(_c.get("default_proxy", ""))
 

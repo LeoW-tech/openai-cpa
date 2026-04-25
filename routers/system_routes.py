@@ -7,14 +7,10 @@ import threading
 import sys
 import subprocess
 import httpx
-import email
-import hashlib
-from email import policy
 from typing import Optional, Any
-from fastapi import APIRouter, Depends, Query, Request, WebSocket, HTTPException, Header
+from fastapi import APIRouter, Depends, Query, Request, WebSocket, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-from cachetools import TTLCache
 
 from global_state import VALID_TOKENS, CLUSTER_NODES, NODE_COMMANDS, cluster_lock, log_history, engine, verify_token, worker_status, append_log
 from utils import core_engine, db_manager
@@ -25,20 +21,10 @@ import utils.config as cfg
 router = APIRouter()
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-processed_msgs = TTLCache(maxsize=50000, ttl=3600)
-code_pool = TTLCache(maxsize=20000, ttl=60)
-cache_lock = asyncio.Lock()
-
 class DummyArgs:
     def __init__(self, proxy=None, once=False):
         self.proxy = proxy
         self.once = once
-
-class EmailWebhookReq(BaseModel):
-    message_id: str
-    to_addr: str
-    raw_content: str
-    from_addr: Optional[str] = None
 
 class LoginData(BaseModel): password: str
 class ClusterUploadAccountsReq(BaseModel): node_name: str; secret: str; accounts: list
@@ -572,64 +558,4 @@ def ext_reset_stats(token: str = Depends(verify_token)):
 def ext_stop(token: str = Depends(verify_token)):
     from utils import core_engine
     core_engine.run_stats["ext_is_running"] = False
-    return {"status": "success"}
-
-@router.post("/api/webhook/email")
-async def receive_email_webhook(req: EmailWebhookReq, x_webhook_secret: str = Header(None)):
-    if not getattr(core_engine.cfg, 'FREEMAIL_LOCAL_WEBHOOK', False):
-        raise HTTPException(status_code=403, detail="Local webhook feature is disabled")
-
-    expected_secret = str(getattr(core_engine.cfg, 'FREEMAIL_WEBHOOK_SECRET', ""))
-    if not expected_secret or x_webhook_secret != expected_secret:
-        raise HTTPException(status_code=403, detail="Unauthorized: Secret mismatch")
-
-    raw_content = (req.raw_content or "").strip()
-    to_addr = (req.to_addr or "").lower().strip()
-    msg_id = (req.message_id or "").strip()
-
-    if not to_addr or not raw_content:
-        return {"status": "error", "message": "Missing core email data"}
-
-    if not msg_id:
-        msg_id = hashlib.md5(raw_content.encode('utf-8', errors='ignore')).hexdigest()
-
-    async with cache_lock:
-        if msg_id in processed_msgs:
-            return {"status": "ignored"}
-        processed_msgs[msg_id] = True
-
-    text_content = ""
-    try:
-        msg = email.message_from_string(raw_content, policy=policy.default)
-
-        if msg.is_multipart():
-            for part in msg.walk():
-                if part.get_content_type() == "text/plain":
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        text_content = payload.decode(part.get_content_charset() or 'utf-8', errors='ignore')
-                    break
-
-            if not text_content:
-                for part in msg.walk():
-                    if part.get_content_type() == "text/html":
-                        payload = part.get_payload(decode=True)
-                        if payload:
-                            text_content = payload.decode(part.get_content_charset() or 'utf-8', errors='ignore')
-                        break
-        else:
-            payload = msg.get_payload(decode=True)
-            if payload:
-                text_content = payload.decode(msg.get_content_charset() or 'utf-8', errors='ignore')
-
-    except Exception as e:
-        print(f"[{core_engine.ts()}] [邮箱节点] ❌ 邮件解析异常 -> {to_addr}: {e}")
-        return {"status": "error", "message": "Parse exception"}
-
-    text_content = text_content.strip()
-    if not text_content:
-        return {"status": "ignored", "message": "Empty email body"}
-
-    async with cache_lock:
-        code_pool[to_addr] = text_content
     return {"status": "success"}

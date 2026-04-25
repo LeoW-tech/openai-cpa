@@ -35,6 +35,9 @@ gptmail_base: "https://your-domain.com" #是后端访问链接，不是前端访
 # [模式 "cloudflare_temp_email" 专属配置]
 # 你的临时邮箱管理员密码
 admin_auth: ""
+# [项目专属内存池邮箱配置]
+openai_cpa:
+  webhook_secret: "wenfxl_secret_key"
 
 # [模式 "imap" 专属配置] (CF Catch-all 转发接收端)
 imap:
