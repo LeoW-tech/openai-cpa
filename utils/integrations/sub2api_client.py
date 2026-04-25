@@ -3,6 +3,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
+import uuid
 from utils import config as cfg
 from curl_cffi import requests as cffi_requests
 from utils.integrations.sub2api_proxy import parse_sub2api_proxy
@@ -200,7 +201,9 @@ class Sub2APIClient:
 
         try:
             headers = self.headers.copy()
-            headers["Idempotency-Key"] = f"import-{int(time.time())}"
+            # Use a per-request idempotency key so burst imports in the same second
+            # do not collide server-side.
+            headers["Idempotency-Key"] = f"import-{uuid.uuid4().hex}"
             response = cffi_requests.post(
                 url,
                 json=payload,

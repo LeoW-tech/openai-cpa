@@ -28,6 +28,11 @@ class _FakeResponse:
         return self._payload
 
 
+class _FakeUuid:
+    def __init__(self, hex_value):
+        self.hex = hex_value
+
+
 class Sub2APIClientProxyBindingTests(unittest.TestCase):
     def _reload_client_module(self):
         sys.modules.pop("utils.integrations.sub2api_client", None)
@@ -41,6 +46,7 @@ class Sub2APIClientProxyBindingTests(unittest.TestCase):
         def fake_post(url, json=None, headers=None, timeout=None, impersonate=None, proxies=None):
             captured["url"] = url
             captured["json"] = json
+            captured["headers"] = dict(headers or {})
             return _FakeResponse(status_code=200, payload={"status": "success"})
 
         token_data = {
@@ -49,7 +55,8 @@ class Sub2APIClientProxyBindingTests(unittest.TestCase):
             "sub2api_proxy_name": "🇯🇵 日本W03 | IEPL",
         }
 
-        with patch.object(sub2api_client.cffi_requests, "post", side_effect=fake_post):
+        with patch.object(sub2api_client.cffi_requests, "post", side_effect=fake_post), \
+             patch.object(sub2api_client.uuid, "uuid4", return_value=_FakeUuid("test-uuid")):
             ok, msg = client.add_account(token_data)
 
         self.assertTrue(ok)
@@ -60,6 +67,35 @@ class Sub2APIClientProxyBindingTests(unittest.TestCase):
         self.assertEqual("refresh-token", account["credentials"]["refresh_token"])
         self.assertEqual(EXPECTED_MODEL_MAPPING, account["credentials"]["model_mapping"])
         self.assertIn("load_factor", account["extra"])
+        self.assertEqual("import-test-uuid", captured["headers"]["Idempotency-Key"])
+
+    def test_add_account_import_uses_unique_idempotency_key_per_request(self):
+        sub2api_client = self._reload_client_module()
+        client = sub2api_client.Sub2APIClient(api_url="http://127.0.0.1:8080", api_key="demo-key")
+        captured_headers = []
+
+        def fake_post(url, json=None, headers=None, timeout=None, impersonate=None, proxies=None):
+            captured_headers.append(dict(headers or {}))
+            return _FakeResponse(status_code=200, payload={"status": "success"})
+
+        with patch.object(sub2api_client.cffi_requests, "post", side_effect=fake_post), \
+             patch.object(sub2api_client.uuid, "uuid4", side_effect=[_FakeUuid("uuid-one"), _FakeUuid("uuid-two")]):
+            ok_first, _ = client.add_account({
+                "email": "first@example.com",
+                "access_token": "access-one",
+                "refresh_token": "refresh-one",
+            })
+            ok_second, _ = client.add_account({
+                "email": "second@example.com",
+                "access_token": "access-two",
+                "refresh_token": "refresh-two",
+            })
+
+        self.assertTrue(ok_first)
+        self.assertTrue(ok_second)
+        self.assertEqual("import-uuid-one", captured_headers[0]["Idempotency-Key"])
+        self.assertEqual("import-uuid-two", captured_headers[1]["Idempotency-Key"])
+        self.assertNotEqual(captured_headers[0]["Idempotency-Key"], captured_headers[1]["Idempotency-Key"])
 
     def test_add_account_with_access_token_and_no_proxy_uses_import_endpoint(self):
         sub2api_client = self._reload_client_module()
