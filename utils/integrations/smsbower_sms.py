@@ -628,6 +628,7 @@ def try_verify_phone_via_smsbower(session: requests.Session, *, proxies: Any, hi
                 _smsbower_country_record_result(country_id, True)
                 if reuse_on:
                     _smsbower_reuse_set(aid, phone, service_code, country_id)
+                    _info(f"📥 验证成功！号码 {phone} 已挂起并存入复用池。")
                 return True, next_n
 
             last_reason = reason_n
